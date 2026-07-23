@@ -1,0 +1,170 @@
+{
+  "object" : {
+    "artifacts" : [
+
+    ],
+    "dependencies" : [
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "audioplayers_darwin-6.4.0",
+          "kind" : "fileSystem",
+          "location" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/audioplayers_darwin-6.4.0",
+          "name" : "audioplayers_darwin"
+        },
+        "state" : {
+          "name" : "fileSystem",
+          "path" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/audioplayers_darwin-6.4.0"
+        },
+        "subpath" : "audioplayers_darwin-6.4.0"
+      },
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "cwlcatchexception",
+          "kind" : "remoteSourceControl",
+          "location" : "https://github.com/mattgallagher/CwlCatchException.git",
+          "name" : "CwlCatchException"
+        },
+        "state" : {
+          "checkoutState" : {
+            "revision" : "07b2ba21d361c223e25e3c1e924288742923f08c",
+            "version" : "2.2.1"
+          },
+          "name" : "sourceControlCheckout"
+        },
+        "subpath" : "CwlCatchException"
+      },
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "flutter_local_notifications-19.5.0",
+          "kind" : "fileSystem",
+          "location" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/flutter_local_notifications-19.5.0",
+          "name" : "flutter_local_notifications"
+        },
+        "state" : {
+          "name" : "fileSystem",
+          "path" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/flutter_local_notifications-19.5.0"
+        },
+        "subpath" : "flutter_local_notifications-19.5.0"
+      },
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "flutter_timezone-4.1.1",
+          "kind" : "fileSystem",
+          "location" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/flutter_timezone-4.1.1",
+          "name" : "flutter_timezone"
+        },
+        "state" : {
+          "name" : "fileSystem",
+          "path" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/flutter_timezone-4.1.1"
+        },
+        "subpath" : "flutter_timezone-4.1.1"
+      },
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "flutterframework",
+          "kind" : "fileSystem",
+          "location" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/FlutterFramework",
+          "name" : "FlutterFramework"
+        },
+        "state" : {
+          "name" : "fileSystem",
+          "path" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/FlutterFramework"
+        },
+        "subpath" : "flutterframework"
+      },
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "geocoding_ios-3.1.0",
+          "kind" : "fileSystem",
+          "location" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/geocoding_ios-3.1.0",
+          "name" : "geocoding_ios"
+        },
+        "state" : {
+          "name" : "fileSystem",
+          "path" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/geocoding_ios-3.1.0"
+        },
+        "subpath" : "geocoding_ios-3.1.0"
+      },
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "geolocator_apple-2.3.13",
+          "kind" : "fileSystem",
+          "location" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/geolocator_apple-2.3.13",
+          "name" : "geolocator_apple"
+        },
+        "state" : {
+          "name" : "fileSystem",
+          "path" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/geolocator_apple-2.3.13"
+        },
+        "subpath" : "geolocator_apple-2.3.13"
+      },
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "in_app_purchase_storekit-0.4.10",
+          "kind" : "fileSystem",
+          "location" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/in_app_purchase_storekit-0.4.10",
+          "name" : "in_app_purchase_storekit"
+        },
+        "state" : {
+          "name" : "fileSystem",
+          "path" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/in_app_purchase_storekit-0.4.10"
+        },
+        "subpath" : "in_app_purchase_storekit-0.4.10"
+      },
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "package_info_plus-9.0.1",
+          "kind" : "fileSystem",
+          "location" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/package_info_plus-9.0.1",
+          "name" : "package_info_plus"
+        },
+        "state" : {
+          "name" : "fileSystem",
+          "path" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/package_info_plus-9.0.1"
+        },
+        "subpath" : "package_info_plus-9.0.1"
+      },
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "shared_preferences_foundation-2.5.6",
+          "kind" : "fileSystem",
+          "location" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/shared_preferences_foundation-2.5.6",
+          "name" : "shared_preferences_foundation"
+        },
+        "state" : {
+          "name" : "fileSystem",
+          "path" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/shared_preferences_foundation-2.5.6"
+        },
+        "subpath" : "shared_preferences_foundation-2.5.6"
+      },
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "speech_to_text-7.4.0",
+          "kind" : "fileSystem",
+          "location" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/speech_to_text-7.4.0",
+          "name" : "speech_to_text"
+        },
+        "state" : {
+          "name" : "fileSystem",
+          "path" : "/Users/shubhamarora/FlutterProjects/GodMorning_iOS_Alarm_SAFE_2026-07-21/ios/Flutter/ephemeral/Packages/.packages/speech_to_text-7.4.0"
+        },
+        "subpath" : "speech_to_text-7.4.0"
+      }
+    ],
+    "prebuilts" : [
+
+    ]
+  },
+  "version" : 7
+}

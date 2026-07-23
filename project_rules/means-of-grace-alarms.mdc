@@ -1,0 +1,70 @@
+---
+description: Means of Grace alarm system — iOS sound, scheduling, prayer lock. Read before changing alarms.
+globs:
+  - lib/services/alarm_*.dart
+  - lib/screens/alarm_screen.dart
+  - lib/screens/evening_blessing_screen.dart
+  - lib/screens/app_launch_gate.dart
+  - ios/Runner/AlarmAudioPlugin.swift
+  - ios/Runner/alarm.wav
+alwaysApply: false
+---
+
+# Means of Grace — Alarm System
+
+## iPhone sound (critical)
+
+- **In-app loop**: iOS uses native `AlarmAudioPlugin.swift` — respects `AlarmSoundPreferences`.
+- **Watchdog**: `AlarmSoundService` 2s timer restarts native loop if `_wantPlaying` && not `_previewMode`.
+- **Prayer screens**: 2s screen watchdog only when `_shouldRingAlarm` (ringing state).
+- **Stop sets `_wantPlaying = false`** — required before STT or sound keeps restarting.
+- **Settings preview**: `previewSample()` 2s; `_previewMode` disables service watchdog.
+- **Select sound** = save only; separate Preview button.
+- **Info.plist**: `UIBackgroundModes` includes `audio`.
+- **Start sound**: `main.dart` calls `start()` before Navigator push when notification opens alarm.
+
+## Sound during recording (DO NOT REGRESS)
+
+- Alarm plays **ringing screen only**.
+- `_startListening` must call `stop()` for **both** live and preview morning alarms.
+- Never call `ensurePlaying()` after `_speech.listen()`.
+
+## Notifications (iOS)
+
+- Must request **alert + sound** — check `hasPermissions()` uses both.
+- `scheduleFromPreferences()` returns `AlarmScheduleStatus`; aborts if permission denied.
+- **24-hour scheduling**: any hour 0–23 via `AlarmRegistry`; daily repeat + backup IDs 11/12.
+- **Watchdog backup**: `AlarmFireWatchdog` 90s window; `resetDaily()` on prefs save only.
+- **Foreground**: `AppDelegate` → `alarm_launch` → opens alarm UI + sound.
+- Per-payload debounce in `main.dart` (2 min, separate morning/evening keys).
+- Test: Settings → "Test morning alarm" (5 seconds).
+
+## Morning prayer lock
+
+- `AlarmSessionService.isMorningCompletionRequired()` after alarm time if not completed today.
+- `AppLaunchGate` shows blocking `AlarmScreen(isLiveAlarm: true)` until Done.
+- Sound stops when user starts prayer (listening), not only on success.
+- Preview uses `isLiveAlarm: false` (no lock).
+
+## Speech (morning/evening)
+
+- English prayer text → English STT (`SpeechMatchUtils.speechLocalePrefix`).
+- **85%** ordered word match auto-advances intermediate steps only; **last step requires Amen**.
+- Live alarm: no cancel/skip; must read each step before Next.
+
+## Install on device
+
+Release build (debug cannot launch from home screen on Personal Team):
+
+```bash
+cd ios && xcodebuild -workspace Runner.xcworkspace -scheme Runner \
+  -configuration Release -destination 'id=DEVICE_UDID' -allowProvisioningUpdates build
+xcrun devicectl device install app --device DEVICE_UUID \
+  ~/Library/Developer/Xcode/DerivedData/Runner-*/Build/Products/Release-iphoneos/Runner.app
+```
+
+## User checklist
+
+1. iPhone Settings → Means of Grace → Notifications → Allow + Sounds
+2. Set alarm time in app Settings (auto-saves)
+3. Test with "Test morning alarm" (5 seconds)

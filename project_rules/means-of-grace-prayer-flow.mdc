@@ -1,0 +1,51 @@
+---
+description: Means of Grace morning/evening prayer UX — step gates, Amen, speech. Read before changing prayer screens.
+globs:
+  - lib/screens/alarm_screen.dart
+  - lib/screens/evening_blessing_screen.dart
+  - lib/utils/speech_match_utils.dart
+alwaysApply: false
+---
+
+# Means of Grace — Prayer Flow (DO NOT REGRESS)
+
+## Alarm sound vs STT (CRITICAL — do not break)
+
+| State | Alarm sound |
+|-------|-------------|
+| `ringing` | **ON** — loop + 2s screen watchdog `ensurePlaying()` |
+| `listening` | **OFF** — must call `stop()` before STT; never restart |
+| `success` | **OFF** |
+
+- `_shouldRingAlarm` = state == ringing only.
+- `_startListening()` → **always** `AlarmSoundService.stop()` (live + preview).
+- `_beginListeningSession()` → **no** `ensurePlaying()` — mic and alarm conflict.
+- STT auto-resume (`_scheduleSpeechResume`, `_restartListeningSession`) must not restart alarm.
+- Preview `_cancelListening()` → back to ringing → `_syncAlarmSound()` OK.
+
+## Morning prayer — live alarm (`isLiveAlarm: true`)
+
+### Step advancement
+- **Every step**: require `SpeechMatchUtils.canAdvance` (~**80%** read aloud or typed).
+- **「다음 단계로」** / **Amen**: enabled at 80%+; user **must tap manually** — **no auto-advance**.
+- **Input**: Voice (STT) or **keyboard** (`_PrayerInputMode` in `alarm_screen.dart`).
+- **NO** manual bypass skip.
+
+### Last step + Amen
+- **「Amen」** on last step only; **disabled** until 80%+ read/typed.
+- **NO auto-complete** on last step.
+- `_finishWithAmen()` → `_onAlarmSuccess()` stops alarm + records completion.
+
+### Other
+- No cancel on live alarm. Preview (`isLiveAlarm: false`) may cancel back to ringing (sound resumes).
+
+## Evening prayer
+- Same sound rules as morning.
+- Amen button finishes; auto-complete at 85% optional.
+
+## Speech
+- Threshold: **0.80** (`SpeechMatchUtils.matchThreshold`)
+- Morning: manual step advance only; keyboard input supported
+- STT auto-resume: 20s pause, 5min segment
+
+See also `means-of-grace-project-memory.mdc` for full user requirements.

@@ -1,0 +1,54 @@
+God Morning iOS Alarm Bug-Fix Requirements
+
+Fix only the existing alarm bugs. Do not rebuild the app or make unrelated changes.
+
+CORE RULE
+The alarm must keep returning until the user completes the Scripture-and-prayer mission and taps Amen. Amen is the only permanent stop for that specific alarm.
+
+BUG 1 - SIDE BUTTON
+Set an alarm, terminate the app, and lock the iPhone. When it rings, press the side/power button. Repeat this as the alarm returns.
+
+Current: after several presses, the alarm can stop without Amen.
+Required: the alarm returns every 15-30 seconds until Amen. Pressing the side button must never count as completion.
+
+BUG 2 - WRONG SOUND AFTER 15-SECOND INACTIVITY
+The mission already has a visible 15-second inactivity countdown.
+
+Current: an inactivity re-ring can use an unselected sound.
+Required: every re-ring uses only the sound selected for the alarm that opened the mission. Recording or typing resets the countdown and silences the ringing sound. If inactivity continues, repeat until Amen.
+
+BUG 3 - FORCE-QUIT OR LEAVING THE MISSION
+Open the mission, start recording or typing, then background or force-quit the app before Amen.
+
+Current: the alarm can stop returning.
+Required: locking the phone, leaving the mission, backgrounding, or force-quitting before Amen must cause the owner alarm to return every 15-30 seconds. Amen is the only completion action.
+
+BUG 4 - ANOTHER ALARM'S SOUND
+Current: alarm 1 can begin with its correct sound but later retries can use alarm 2's sound or a default sound.
+
+Required: the initial alert and every side-button, inactivity, and force-quit retry must use only the owner alarm's selected sound. Alarm 2's sound may begin only at alarm 2's configured time.
+
+BUG 5 - MULTIPLE ALARMS AND SCHEDULING
+Up to five morning alarms must independently preserve their configured time, selected sound, fired-alarm identity, mission, retries, and Amen completion. Retries must not make another alarm ring early, late, or disappear. Completing one alarm must not affect later alarms. Amen must cancel that alarm's remaining retries and must not open a duplicate mission. The evening blessing alarm follows the same rules without interfering with morning alarms.
+
+MISSION RULES
+- Sound is ON only in the ringing state.
+- Sound is OFF while speech recognition or typing is active.
+- Speech recognition must start reliably.
+- Never mark completion before the user taps Amen.
+- A live mission cannot be dismissed as completion.
+- After completion, the user can tap "Walk With God Today."
+
+TESTING
+Test Bugs 1-5 three consecutive times on a physical iPhone running iOS 26. Include tests with the app terminated and the phone locked. Provide the modified source files, a Git diff or patch, a root-cause explanation, and physical-device test evidence.
+
+The live app is available for reference:
+https://apps.apple.com/app/god-morning/id6775657705
+Search term: God Morning Alarm
+
+IMPORTANT SCOPE
+- Do not change subscriptions, devotional content, localization, Android code, or unrelated UI.
+- Keep changes small and reviewable.
+- Do not remove the return-until-Amen behavior.
+- Do not request or use the owner's Apple ID password, App Store Connect login, signing certificate, private key, or production credentials.
+

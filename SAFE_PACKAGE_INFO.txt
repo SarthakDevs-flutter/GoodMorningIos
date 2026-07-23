@@ -1,0 +1,45 @@
+This is a sanitized source snapshot for an external iOS alarm bug-fix review.
+
+Included:
+- Current Flutter lib/ source
+- iOS Runner Swift alarm/audio/intent/lifecycle source
+- iOS Xcode project with DEVELOPMENT_TEAM removed
+- App alarm sound assets required for per-alarm sound testing
+- Existing Flutter tests and alarm-specific project rules
+
+Excluded:
+- Git history and .git directory
+- Apple account credentials and App Store Connect credentials
+- Apple signing certificates, provisioning profiles, and private keys
+- Apple development team identifier
+- Android signing key, key.properties, and upload keystore
+- Claude/Codex local settings
+- Build logs, local absolute paths, DerivedData, Pods, generated xcconfig files
+- App Store documents containing personal email or phone information
+- Firebase/service-account configuration (none was found in the source snapshot)
+
+To run:
+1. Run flutter pub get.
+2. Open ios/Runner.xcworkspace after dependencies are generated.
+3. Select your own Apple Development Team for local physical-device testing.
+4. Use your own temporary bundle identifier if Xcode requires it.
+
+Main alarm files:
+- ios/Runner/NativeAlarmPlugin.swift
+- ios/Runner/OpenMissionIntent.swift
+- ios/Runner/AlarmAudioPlugin.swift
+- ios/Runner/SceneDelegate.swift
+- ios/Runner/AppDelegate.swift
+- lib/services/native_alarm_service.dart
+- lib/services/alarm_notification_service.dart
+- lib/services/alarm_schedule_helper.dart
+- lib/services/alarm_session_service.dart
+- lib/services/alarm_persistence_service.dart
+- lib/services/alarm_store.dart
+- lib/services/alarm_sound_service.dart
+- lib/services/alarm_sound_preferences.dart
+- lib/screens/app_launch_gate.dart
+- lib/screens/simple_morning_mission_screen.dart
+- lib/main.dart
+
+Return the changed source files plus a unified Git diff/patch. Do not return signing artifacts or credentials.
