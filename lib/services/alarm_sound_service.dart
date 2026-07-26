@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'alarm_sound_preferences.dart';
+import 'alarm_session_service.dart';
+import 'alarm_store.dart';
 
 /// Plays looping alarm audio. iOS uses native AVAudioPlayer with bundled tones.
 class AlarmSoundService {
@@ -27,9 +29,67 @@ class AlarmSoundService {
   bool _wantPlaying = false;
   bool _previewMode = false;
   DateTime? _lastIosLoudnessReinforceAt;
+  AlarmSoundSource? _activeSourceOverride;
 
   bool get isPlaying => _isPlaying;
   bool get isPreviewMode => _previewMode;
+
+  Future<AlarmSoundSource> _getSoundSource({
+    String? alarmId,
+    AlarmSoundSource? sourceOverride,
+  }) async {
+    if (sourceOverride != null) return sourceOverride;
+    var id = alarmId ?? await AlarmSessionService.instance.activeAlarmId();
+    if (id == null || id.isEmpty) {
+      try {
+        final alarms = await AlarmStore.loadAlarms();
+        final now = DateTime.now();
+        final todayAlarms = alarms.where((a) => a.enabled && a.weekdays.contains(now.weekday)).toList();
+        if (todayAlarms.isNotEmpty) {
+          if (todayAlarms.length == 1) {
+            id = todayAlarms.first.id;
+          } else {
+            final nowMinutes = now.hour * 60 + now.minute;
+            todayAlarms.sort((a, b) {
+              final diffA = (a.minutesOfDay - nowMinutes).abs();
+              final diffB = (b.minutesOfDay - nowMinutes).abs();
+              return diffA.compareTo(diffB);
+            });
+            id = todayAlarms.first.id;
+          }
+        }
+      } catch (e) {
+        debugPrint('AlarmSoundService: failed to dynamically resolve alarmId: $e');
+      }
+    }
+    if (id != null && id.isNotEmpty) {
+      try {
+        final alarms = await AlarmStore.loadAlarms();
+        final alarm = alarms.firstWhere(
+          (a) => a.id == id,
+          orElse: () => const MorningAlarm(
+            id: '',
+            hour: 0,
+            minute: 0,
+            weekdays: [],
+            enabled: false,
+          ),
+        );
+        if (alarm.id.isNotEmpty &&
+            alarm.soundName != null &&
+            alarm.soundName!.isNotEmpty) {
+          final source =
+              AlarmSoundPreferences.sourceForFileName(alarm.soundName);
+          if (source != null) {
+            return source;
+          }
+        }
+      } catch (e) {
+        debugPrint('AlarmSoundService: failed to resolve active alarm sound: $e');
+      }
+    }
+    return AlarmSoundPreferences.getSource();
+  }
 
   Future<void> configure() async {
     if (kIsWeb) return;
@@ -59,29 +119,46 @@ class AlarmSoundService {
 
   static const selectionPreviewMaxDuration = Duration(seconds: 30);
 
-  Future<void> start({bool forPreview = false}) async {
+  Future<void> start({
+    bool forPreview = false,
+    String? alarmId,
+    AlarmSoundSource? sourceOverride,
+  }) async {
     if (forPreview) {
       _selectionPreviewTimer?.cancel();
       _previewWatchdogTimer?.cancel();
       await _stopPlayers(keepSession: true);
       _previewMode = true;
       _wantPlaying = true;
-      await _startPlayback(loop: false, loud: false);
+      _activeSourceOverride = sourceOverride;
+      await _startPlayback(loop: false, loud: false, sourceOverride: sourceOverride);
       return;
     }
+
+    final resolvedSource = await _getSoundSource(
+      alarmId: alarmId,
+      sourceOverride: sourceOverride,
+    );
 
     // Already playing — keep going. Calling stop+restart causes audible gaps,
     // and start() gets called multiple times per alarm (notification, gate,
     // ringing screen). Guard must run BEFORE stop().
-    if (_wantPlaying && !_previewMode && await _isAlreadyPlaying()) {
+    //
+    // Note: If the currently playing source is different from the newly resolved source,
+    // we must not skip; we must restart playback to play the correct configured sound.
+    if (_wantPlaying &&
+        !_previewMode &&
+        _activeSourceOverride == resolvedSource &&
+        await _isAlreadyPlaying()) {
       _isPlaying = true;
-      _startWatchdog();
+      _startWatchdog(sourceOverride: resolvedSource);
       return;
     }
 
+    _activeSourceOverride = resolvedSource;
     await stop();
     _wantPlaying = true;
-    await _startPlayback();
+    await _startPlayback(sourceOverride: resolvedSource);
   }
 
   /// Tap a sound in settings — play the selected file once.
@@ -139,17 +216,17 @@ class AlarmSoundService {
       try {
         await _startAndroid(loop: loop, sourceOverride: sourceOverride);
         _isPlaying = true;
-        if (!_previewMode) _startWatchdog();
+        if (!_previewMode) _startWatchdog(sourceOverride: sourceOverride);
         debugPrint('AlarmSoundService: started (Android)');
       } catch (error) {
         debugPrint('AlarmSoundService Android failed: $error');
-        await _startAudioplayersFallback(loop: loop);
+        await _startAudioplayersFallback(loop: loop, sourceOverride: sourceOverride);
         _isPlaying = true;
       }
       return;
     }
 
-    await _startAudioplayersFallback(loop: loop);
+    await _startAudioplayersFallback(loop: loop, sourceOverride: sourceOverride);
     _isPlaying = true;
   }
 
@@ -175,7 +252,7 @@ class AlarmSoundService {
         await _invokeIosStart(attempt);
         _isPlaying = true;
         _lastIosLoudnessReinforceAt = DateTime.now();
-        if (!_previewMode) _startWatchdog();
+        if (!_previewMode) _startWatchdog(sourceOverride: sourceOverride);
         debugPrint('AlarmSoundService: started iOS $attempt');
         return;
       } catch (error) {
@@ -185,9 +262,9 @@ class AlarmSoundService {
     }
 
     try {
-      await _startAudioplayersFallback(loop: loop);
+      await _startAudioplayersFallback(loop: loop, sourceOverride: sourceOverride);
       _isPlaying = true;
-      if (!_previewMode) _startWatchdog();
+      if (!_previewMode) _startWatchdog(sourceOverride: sourceOverride);
       debugPrint('AlarmSoundService: started iOS audioplayers fallback');
     } catch (error) {
       _isPlaying = false;
@@ -260,6 +337,7 @@ class AlarmSoundService {
   Future<void> stop() async {
     _wantPlaying = false;
     _previewMode = false;
+    _activeSourceOverride = null;
     _watchdogTimer?.cancel();
     _watchdogTimer = null;
     _selectionPreviewTimer?.cancel();
@@ -289,19 +367,21 @@ class AlarmSoundService {
     await previewSample(duration: duration);
   }
 
-  Future<void> ensurePlaying() async {
+  Future<void> ensurePlaying({AlarmSoundSource? sourceOverride}) async {
     if (!_wantPlaying) return;
+    final resolvedSource = sourceOverride ?? _activeSourceOverride ?? await _getSoundSource();
+    _activeSourceOverride = resolvedSource;
     if (await _isAlreadyPlaying()) {
       _isPlaying = true;
-      if (!_previewMode) _startWatchdog();
+      if (!_previewMode) _startWatchdog(sourceOverride: resolvedSource);
       await _reinforceIosLoudness();
       return;
     }
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
-      await _startIosWithFallbacks();
+      await _startIosWithFallbacks(sourceOverride: resolvedSource);
       return;
     }
-    if (!_isPlaying) await start();
+    if (!_isPlaying) await start(sourceOverride: resolvedSource);
   }
 
   Future<bool> _isAlreadyPlaying() async {
@@ -322,7 +402,7 @@ class AlarmSoundService {
     bool loop = true,
     AlarmSoundSource? sourceOverride,
   }) async {
-    final source = sourceOverride ?? await AlarmSoundPreferences.getSource();
+    final source = sourceOverride ?? await _getSoundSource();
     switch (source) {
       case AlarmSoundSource.bundledGodMorning1:
       case AlarmSoundSource.bundledGodMorning2:
@@ -339,6 +419,7 @@ class AlarmSoundService {
         await _startAudioplayersFallback(
           loop: loop,
           assetName: _assetNameForSource(source),
+          sourceOverride: sourceOverride,
         );
       case AlarmSoundSource.systemAlarm:
       case AlarmSoundSource.systemNotification:
@@ -347,11 +428,13 @@ class AlarmSoundService {
         await _startAudioplayersFallback(
           assetName: _defaultAlarmToneAsset,
           loop: loop,
+          sourceOverride: sourceOverride,
         );
       case AlarmSoundSource.iosSystemSound:
         await _startAudioplayersFallback(
           assetName: _defaultAlarmToneAsset,
           loop: loop,
+          sourceOverride: sourceOverride,
         );
     }
   }
@@ -374,13 +457,14 @@ class AlarmSoundService {
   Future<void> _startAudioplayersFallback({
     String? assetName,
     bool loop = true,
+    AlarmSoundSource? sourceOverride,
   }) async {
     if (assetName == null) {
       // 폴백도 사용자가 고른 알람음으로 — 고정 기본음(god_morning_1)을
       // 틀면 '지정음으로 울리다 다른 소리로 바뀌는' 혼란이 된다
       // (실측 2026-07-11 06:40).
       try {
-        final source = await AlarmSoundPreferences.getSource();
+        final source = sourceOverride ?? await _getSoundSource();
         assetName = _assetNameForSource(source);
       } catch (_) {}
     }
@@ -437,7 +521,7 @@ class AlarmSoundService {
     }
   }
 
-  void _startWatchdog() {
+  void _startWatchdog({AlarmSoundSource? sourceOverride}) {
     if (!_wantPlaying || _previewMode) return;
     if (_watchdogTimer?.isActive ?? false) return;
 
@@ -449,7 +533,8 @@ class AlarmSoundService {
               await _nativeChannel.invokeMethod<bool>('isPlaying') ?? false;
           if (!playing) {
             debugPrint('Alarm watchdog: restarting');
-            await _startIosWithFallbacks();
+            final resolvedSource = sourceOverride ?? _activeSourceOverride ?? await _getSoundSource();
+            await _startIosWithFallbacks(sourceOverride: resolvedSource);
           } else {
             await _reinforceIosLoudness();
           }

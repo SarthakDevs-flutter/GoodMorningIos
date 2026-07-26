@@ -23,10 +23,14 @@ class AlarmPersistenceService {
   static const String slotMorning = 'morning';
   static const String slotEvening = 'evening';
 
-  static Future<void> onAlarmFired(String payload) async {
+  static Future<void> onAlarmFired(String payload, {String? alarmId}) async {
+    if (await AlarmSessionService.instance.checkAndHandleConflict(payload, alarmId: alarmId)) {
+      return;
+    }
+
     if (payload == AlarmNotificationService.morningAlarmPayload) {
-      await AlarmSessionService.instance.activateMorningAlarmSession();
-      await AlarmSoundService.instance.start();
+      await AlarmSessionService.instance.activateMorningAlarmSession(alarmId: alarmId);
+      await AlarmSoundService.instance.start(alarmId: alarmId);
       debugPrint('AlarmPersistence: morning session started (in-app sound)');
       return;
     }
@@ -141,6 +145,12 @@ class AlarmPersistenceService {
     // 완료 순간 화면에 남은 배너 청소(예약 무접촉).
     unawaited(NativeAlarmService.clearDeliveredNotifications());
     await _rearmSilentLoopForNextAlarm();
+    await AlarmSessionService.instance.skipPassedAlarmsDuringActiveSession();
+    // The morning session started earlier may have deferred today's evening
+    // blessing to tomorrow. Now that the session has ended, restore it for today
+    // if its time hasn't passed — so a blessing scheduled *after* this Amen still
+    // fires normally (Single Active Alarm policy, Scenario 2).
+    await AlarmSessionService.instance.rearmEveningForTodayIfUpcoming();
     debugPrint('AlarmPersistence: morning completed — all alarms cancelled');
   }
 
@@ -180,12 +190,13 @@ class AlarmPersistenceService {
       // 한다(위 두 호출은 iOS 전용 no-op — 앱을 다시 안 열면 다음 저녁이
       // 침묵하던 구멍의 수리).
       if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
-        await AlarmScheduleHelper.rearmEveningPackageAlarm();
+        await AlarmScheduleHelper.rearmEveningPackageAlarm(forceNextFireAt: tomorrowEvening);
       }
     }
     await AlarmSessionService.instance.markEveningCompleted();
     unawaited(NativeAlarmService.clearDeliveredNotifications());
     await _rearmSilentLoopForNextAlarm();
+    await AlarmSessionService.instance.skipPassedAlarmsDuringActiveSession();
     debugPrint('AlarmPersistence: evening completed — all alarms cancelled');
   }
 

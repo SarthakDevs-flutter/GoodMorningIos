@@ -11,6 +11,113 @@ import AlarmKit
 #if canImport(AlarmKit)
 @available(iOS 26.0, *)
 private struct GraceAlarmMetadata: AlarmMetadata {}
+#else
+// Fictional AlarmKit mock types for backwards compatibility with iOS < 26 SDKs
+
+protocol AlarmMetadata {}
+
+private struct GraceAlarmMetadata: AlarmMetadata {}
+
+@available(iOS 16.0, *)
+struct AlarmButton {
+    init(text: LocalizedStringResource, textColor: UIColor, systemImageName: String) {}
+}
+
+@available(iOS 16.0, *)
+struct AlarmPresentation {
+    struct Alert {
+        init(title: LocalizedStringResource) {}
+        init(title: LocalizedStringResource, stopButton: AlarmButton) {}
+    }
+    init(alert: Alert) {}
+}
+
+@available(iOS 16.0, *)
+struct AlarmAttributes<MetadataType: AlarmMetadata> {
+    init(presentation: AlarmPresentation, metadata: MetadataType, tintColor: UIColor) {}
+}
+
+struct AlarmSound {
+    static func named(_ name: String) -> AlarmSound { AlarmSound() }
+}
+
+@available(iOS 16.0, *)
+struct Alarm {
+    var id: UUID
+    var fireDate: Date?
+    var soundName: String?
+    var state: State
+    var schedule: Schedule?
+    
+    enum State {
+        case ringing, snoozed, scheduled, inactive
+        case countdown, paused, alerting
+    }
+    
+    enum Schedule {
+        case fixed(Date)
+        case relative(Relative)
+        
+        struct Relative {
+            var time: Time
+            var repeats: Recurrence
+            
+            struct Time {
+                var hour: Int
+                var minute: Int
+                init(hour: Int, minute: Int) {
+                    self.hour = hour
+                    self.minute = minute
+                }
+            }
+            
+            enum Recurrence {
+                case never
+                case weekly([Locale.Weekday])
+            }
+        }
+    }
+}
+
+@available(iOS 16.0, *)
+class AlarmManager {
+    static let shared = AlarmManager()
+    
+    enum AuthorizationState {
+        case authorized, denied, notDetermined
+    }
+    
+    var authorizationState: AuthorizationState { .notDetermined }
+    var alarms: [Alarm] { [] }
+    var alarmUpdates: AsyncStream<[Alarm]> {
+        AsyncStream { continuation in
+            continuation.finish()
+        }
+    }
+    
+    func requestAuthorization() async throws -> AuthorizationState {
+        return .notDetermined
+    }
+    
+    func stop(id: UUID) throws {}
+    func cancel(id: UUID) throws {}
+    func snooze(id: UUID) throws {}
+    
+    struct AlarmConfiguration<MetadataType: AlarmMetadata> {
+        init(schedule: Alarm.Schedule, attributes: AlarmAttributes<MetadataType>, sound: AlarmSound) {}
+        
+        static func alarm(
+            schedule: Alarm.Schedule,
+            attributes: AlarmAttributes<MetadataType>,
+            stopIntent: Any,
+            sound: AlarmSound
+        ) -> AlarmConfiguration<MetadataType> {
+            AlarmConfiguration(schedule: schedule, attributes: attributes, sound: sound)
+        }
+    }
+    
+    func schedule<T: AlarmMetadata>(id: UUID, configuration: AlarmConfiguration<T>) async throws {}
+}
 #endif
 
 /// Bridges Flutter alarm scheduling to iOS AlarmKit (26+) for lock-screen alarms.
@@ -117,6 +224,23 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
   // 소진 후 다음 깨어남이 새 20발을 무장하고, 2분 사다리가 20분까지 잇는다.
   private static let missionAbandonIntervalSeconds = 30
   @MainActor private static var morningMissionExitRearmInFlight = false
+
+  static func runWithBackgroundTask(name: String, block: @escaping () async -> Void) {
+    var bgTaskId: UIBackgroundTaskIdentifier = .invalid
+    bgTaskId = UIApplication.shared.beginBackgroundTask(withName: name) {
+      if bgTaskId != .invalid {
+        UIApplication.shared.endBackgroundTask(bgTaskId)
+        bgTaskId = .invalid
+      }
+    }
+    Task {
+      await block()
+      if bgTaskId != .invalid {
+        UIApplication.shared.endBackgroundTask(bgTaskId)
+        bgTaskId = .invalid
+      }
+    }
+  }
 
   private var channel: FlutterMethodChannel?
   private var monitoringTask: Task<Void, Never>?
@@ -449,7 +573,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         result(true)
         return
       }
-      Task {
+      Self.runWithBackgroundTask(name: "resumeMorningRetry") {
         do {
           UserDefaults.standard.set(true, forKey: Self.morningMissionInProgressKey)
           try await Self.rearmMorningNormalRetriesForMissionAbandon(
@@ -481,7 +605,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         result(true)
         return
       }
-      Task {
+      Self.runWithBackgroundTask(name: "resumeEveningRetry") {
         do {
           await Self.rearmEveningChaseIfEmpty(reason: "flutter_abandon")
           await MainActor.run { result(true) }
@@ -534,7 +658,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
             soundName: soundName,
             dartWeekdays: weekdays,
             fireImmediately: fireImmediately,
-            nextFireDate: nextFireDate
+            nextFireDate: nextFireDate,
+            nextAlarmId: args["nextAlarmId"] as? String
           )
           await MainActor.run { result(true) }
         } catch {
@@ -584,7 +709,10 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       let nextFireDate: Date? = ((args["nextFireEpochMillis"] as? NSNumber)?.doubleValue)
         .map { Date(timeIntervalSince1970: $0 / 1000.0) }
       let nextFireIsToday = nextFireDate.map { Calendar.current.isDateInToday($0) }
-      Self.promoteMissedMorningFireIfNeeded()
+      let isSetupActive = (args["isSetupActive"] as? Bool) ?? false
+      if !isSetupActive {
+        Self.promoteMissedMorningFireIfNeeded()
+      }
       Self.storeScheduledMorningAlarmId(
         args["nextAlarmId"] as? String,
         nextFireIsToday: nextFireIsToday
@@ -596,7 +724,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
             minute: minute,
             soundName: soundName,
             dartWeekdays: weekdays,
-            nextFireDate: nextFireDate
+            nextFireDate: nextFireDate,
+            nextAlarmId: args["nextAlarmId"] as? String
           )
           await MainActor.run { result(true) }
         } catch {
@@ -644,7 +773,10 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       let listNextAlarmId = args["nextAlarmId"] as? String
       let fireImmediatelyAlarmId = args["fireImmediatelyAlarmId"] as? String
       _ = listNextIsToday
-      Self.promoteMissedMorningFireIfNeeded()
+      let isSetupActive = (args["isSetupActive"] as? Bool) ?? false
+      if !isSetupActive {
+        Self.promoteMissedMorningFireIfNeeded()
+      }
       // 스탬프 쌍(epoch+알람 id)은 sync 내부에서 함께 저장한다 — 여기서
       // id만 동기 저장하면 미션-중 스킵 때 epoch만 옛값으로 남아, 놓친
       // 발화 승격이 '다음 알람'으로 오귀속된다(같은 날 뒤 알람 오완료).
@@ -1427,7 +1559,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     minute: Int,
     soundName: String,
     dartWeekdays: [Int],
-    nextFireDate: Date? = nil
+    nextFireDate: Date? = nil,
+    nextAlarmId: String? = nil
   ) async throws {
     invalidateSignaturesIfOSChanged()
     purgeStaleRetrySlots(["A1000040", "A1000050"])
@@ -1515,7 +1648,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         hour: hour,
         minute: minute,
         dartWeekdays: dartWeekdays,
-        soundName: soundName
+        soundName: soundName,
+        intentAlarmId: nextAlarmId
       )
       mainScheduled = true
     } catch {
@@ -1524,9 +1658,9 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
 
     // 정시 울림 보호가 우선 — 폴백을 사다리(최대 20건 등록)보다 먼저 심는다.
     if !mainScheduled {
-      await scheduleMorningMainFallback(at: base, soundName: soundName)
+      await scheduleMorningMainFallback(at: base, soundName: soundName, intentAlarmId: nextAlarmId)
     }
-    await scheduleMorningRetryLadder(baseDate: base, soundName: soundName)
+    await scheduleMorningRetryLadder(baseDate: base, soundName: soundName, intentAlarmId: nextAlarmId)
     if mainScheduled {
       UserDefaults.standard.set(signature, forKey: morningBatchSignatureKey)
     }
@@ -1764,7 +1898,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
 
   /// 슬롯 하나의 실패가 나머지 슬롯·후속 예약을 죽이지 않도록 non-throwing.
   @available(iOS 26.0, *)
-  private static func scheduleMorningRetryLadder(baseDate: Date, soundName: String) async {
+  private static func scheduleMorningRetryLadder(baseDate: Date, soundName: String, intentAlarmId: String? = nil) async {
     for rid in morningRetryIds {
       try? AlarmManager.shared.stop(id: rid)
       try? AlarmManager.shared.cancel(id: rid)
@@ -1783,7 +1917,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         try await scheduleOneMorningFixedAlarm(
           id: morningRetryIds[i],
           fireDate: fireDate,
-          soundName: soundName
+          soundName: soundName,
+          intentAlarmId: intentAlarmId
         )
         scheduled += 1
       } catch {
@@ -1975,15 +2110,9 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       UserDefaults.standard.string(forKey: eveningMissionCompletedDateKey)
         != todayKey()
     else { return }
-    let eveningFutureCutoff = Date().addingTimeInterval(2)
-    let active = (try? AlarmManager.shared.alarms.filter {
-      eveningMissionWatchdogIds.contains($0.id)
-        && (Self.fixedFireDate($0).map { $0 > eveningFutureCutoff } ?? false)
-    }.count) ?? 0
-    guard active == 0 else {
-      NSLog("[ALARMKIT] evening chase active (\(active)) — keep, \(reason)")
-      return
-    }
+
+    cancelEveningChase()
+
     // 저녁 추격은 저녁 등록에 실제 쓰인 소리로 — 아침 알람별 소리를
     // 빌려 쓰면 소리 정체성이 갈린다.
     let sound = validatedMorningAlarmKitSoundName(
@@ -2072,7 +2201,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     guard #available(iOS 26.0, *) else { return }
 
     if isMorningMissionInProgress() {
-      Task {
+      Self.runWithBackgroundTask(name: "armMorningExitWatchdogs") {
         do {
           try await rearmMorningNormalRetriesForMissionAbandon(reason: reason)
         } catch {
@@ -2082,7 +2211,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     }
 
     if isEveningMissionInProgress() {
-      Task {
+      Self.runWithBackgroundTask(name: "armEveningExitWatchdogs") {
         await rearmEveningChaseIfEmpty(reason: reason)
       }
     }
@@ -2149,31 +2278,6 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     morningMissionExitRearmInFlight = true
     defer { morningMissionExitRearmInFlight = false }
 
-    // '미래 발화 슬롯'만 살아있는 것으로 센다 — 소진·과거 잔재가 목록에
-    // 남아 있으면 단순 개수 판정이 재무장을 영구 차단해 침묵이 된다
-    // (미검토 델타 검토에서 채택한 정밀화).
-    let futureCutoff = Date().addingTimeInterval(2)
-    let activeMissionExitCount = (try? AlarmManager.shared.alarms.filter {
-      morningMissionWatchdogIds.contains($0.id)
-        && (Self.fixedFireDate($0).map { $0 > futureCutoff } ?? false)
-    }.count) ?? 0
-
-    // 진행 중인 추격은 절대 재건축하지 않는다. 슬롯이 하나라도 남아 있으면
-    // 그대로 소진되게 둔다 — 발화 때마다 '취소 후 재등록'하면 재등록 도중
-    // 앱이 동면하는 순간 사다리가 통째로 증발한다(실측: 두 번째 전원 버튼
-    // 후 침묵). 전부 소진된 뒤에만 새 20발을 무장한다.
-    if activeMissionExitCount > 0 {
-      UserDefaults.standard.set(reason, forKey: morningRearmReasonKey)
-      NSLog("[ALARMKIT] chase already active (\(activeMissionExitCount) slots left) — keep, reason=\(reason)")
-      // 조용 창(꼬리 보존) 도입 후: 추격이 남아 있어도 알람별 등록이 비어
-      // 있으면(참여 판정의 stopAll 잔해) 내일 이후 주간 등록을 살려둔다 —
-      // 예전에는 '추격 전멸→재건축' 경로가 겸사겸사 되살렸던 것.
-      if loadStringMap(morningPerAlarmUuidMapKey).isEmpty {
-        await reRegisterPerAlarmsAfterAbandon()
-      }
-      return
-    }
-
     try await scheduleMorningMissionAbandonLadder(reason: "\(reason)_fallback")
     // 방치 상태에서도 내일 이후의 알람별 등록은 살아 있어야 한다.
     await reRegisterPerAlarmsAfterAbandon()
@@ -2185,6 +2289,11 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
 
     cancelMorningMissionExitLadder()
     let soundName = missionOwnerChaseSoundName()
+    // 추격 알람이 발화할 때 stop intent에 '주인 알람 id'가 실려야 Dart에서
+    // 올바른 소리를 재선택한다 — intentAlarmId 없으면 scheduleOneMissionAlarm
+    // 내부의 폴백이 '다음 알람'으로 덮인 scheduledMorningAlarmId를 쓰거나
+    // 비어버려 기본 소리로 떨어진다.
+    let ownerAlarmId = UserDefaults.standard.string(forKey: morningMissionActiveAlarmIdKey)
     let startTime = Date()
     let generation = UserDefaults.standard.integer(
       forKey: morningMissionExitGenerationKey
@@ -2217,7 +2326,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         try await scheduleOneMorningFixedAlarm(
           id: morningMissionWatchdogIds[i],
           fireDate: fireDate,
-          soundName: soundName
+          soundName: soundName,
+          intentAlarmId: ownerAlarmId
         )
         if UserDefaults.standard.integer(forKey: morningMissionExitGenerationKey) != generation {
           try? AlarmManager.shared.stop(id: morningMissionWatchdogIds[i])
@@ -2776,7 +2886,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     soundName: String,
     dartWeekdays: [Int],
     fireImmediately: Bool = false,
-    nextFireDate: Date? = nil
+    nextFireDate: Date? = nil,
+    nextAlarmId: String? = nil
   ) async throws {
     storeMorningAlarmKitSoundName(soundName)
     for rid in morningRetryIds {
@@ -2813,7 +2924,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         try await scheduleOneMorningFixedAlarm(
           id: morningId,
           fireDate: base,
-          soundName: soundName
+          soundName: soundName,
+          intentAlarmId: nextAlarmId
         )
       } else {
         try await scheduleOneMorningRelativeAlarm(
@@ -2821,7 +2933,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
           hour: hour,
           minute: minute,
           dartWeekdays: dartWeekdays,
-          soundName: soundName
+          soundName: soundName,
+          intentAlarmId: nextAlarmId
         )
       }
       mainScheduled = true
@@ -2830,9 +2943,9 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     }
 
     if !mainScheduled {
-      await scheduleMorningMainFallback(at: base, soundName: soundName)
+      await scheduleMorningMainFallback(at: base, soundName: soundName, intentAlarmId: nextAlarmId)
     }
-    await scheduleMorningRetryLadder(baseDate: base, soundName: soundName)
+    await scheduleMorningRetryLadder(baseDate: base, soundName: soundName, intentAlarmId: nextAlarmId)
     if mainScheduled, !fireImmediately {
       UserDefaults.standard.set(
         morningBatchSignature(

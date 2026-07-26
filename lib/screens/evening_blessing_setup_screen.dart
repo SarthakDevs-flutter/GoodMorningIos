@@ -47,6 +47,7 @@ class _EveningBlessingSetupScreenState extends State<EveningBlessingSetupScreen>
   @override
   void initState() {
     super.initState();
+    AlarmSessionService.instance.setSetupScreenActive(true);
     _time = const TimeOfDay(
       hour: AlarmPreferences.defaultEveningHour,
       minute: AlarmPreferences.defaultEveningMinute,
@@ -61,6 +62,7 @@ class _EveningBlessingSetupScreenState extends State<EveningBlessingSetupScreen>
 
   @override
   void dispose() {
+    AlarmSessionService.instance.setSetupScreenActive(false);
     _pulseController.dispose();
     _timeListenable.dispose();
     unawaited(AlarmSoundService.instance.stop());
@@ -505,7 +507,11 @@ class _EveningBlessingSetupScreenState extends State<EveningBlessingSetupScreen>
                     const SizedBox(height: 28),
                     const Divider(color: AppTheme.surfaceLight),
                     const SizedBox(height: 20),
-                    const AlarmSoundSettingsSection(),
+                    AlarmSoundSettingsSection(
+                      onChanged: (source) {
+                        unawaited(_saveTime(showFeedback: false));
+                      },
+                    ),
                   ],
                   const SizedBox(height: 28),
                   SizedBox(

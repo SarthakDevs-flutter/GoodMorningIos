@@ -67,7 +67,8 @@ class AlarmScheduleHelper {
     // Platform-native morning alarm is the audible engine.
     // Keep legacy alarm-package schedules off for the morning path.
     final useNativeMorningAlarm = await _shouldUseNativeMorningAlarm();
-    final useAlarmKitForEvening = await _shouldUseAlarmKitForMorning();
+    final useAlarmKitForMorning = await _shouldUseAlarmKitForMorning();
+    final useAlarmKitForEvening = useAlarmKitForMorning;
 
     if (morningOn) {
       // 알람 목록 전체에서 (오늘 완료된 알람은 빼고) 다음 발화를 계산한다.
@@ -128,7 +129,7 @@ class AlarmScheduleHelper {
         // 등록된 알람도 몇 분 늦게 몰아 배달된다(실측 2026-07-10: 7:51
         // 등록 3건을 07:56:13에 일괄 배달). SpringBoard 배달 알림은 그
         // 데몬과 독립이라 +45초부터 소리로 깨운다.
-        if (useAlarmKitForEvening && nextInfo != null) {
+        if (useAlarmKitForMorning && nextInfo != null) {
           await AlarmNotificationService.instance.scheduleMorningBackstop(
             fireAt: nextInfo.when,
             soundName: nextInfo.alarm.soundName,
@@ -145,6 +146,7 @@ class AlarmScheduleHelper {
           payload: AlarmNotificationService.morningAlarmPayload,
           title: 'God Morning',
           body: 'It is time to meet with the Lord.',
+          soundName: nextInfo?.alarm.soundName,
         );
       }
     } else {
@@ -195,7 +197,7 @@ class AlarmScheduleHelper {
   /// Android(alarm 패키지) 저녁 재장전 — 1회성 예약이라 아멘 직후 다음
   /// 발생(내일)으로 직접 다시 걸어야 한다. 앱을 다시 열 때까지 다음 저녁이
   /// 통째로 침묵하던 구멍의 수리. iOS AlarmKit 경로에서는 호출하지 않는다.
-  static Future<void> rearmEveningPackageAlarm() async {
+  static Future<void> rearmEveningPackageAlarm({DateTime? forceNextFireAt}) async {
     if (!await AlarmPreferences.isEveningEnabled()) return;
     await _schedulePackageAlarm(
       alarmId: _pkgEveningAlarmId,
@@ -205,6 +207,7 @@ class AlarmScheduleHelper {
       payload: AlarmNotificationService.eveningAlarmPayload,
       title: 'God Morning',
       body: 'Bless before you rest.',
+      forceDateTime: forceNextFireAt,
     );
   }
 
@@ -275,10 +278,14 @@ class AlarmScheduleHelper {
     required String payload,
     required String title,
     required String body,
+    String? soundName,
+    DateTime? forceDateTime,
   }) async {
-    final dt = _nextSelectedDateTime(hour, minute, weekdays);
+    final dt = forceDateTime ?? _nextSelectedDateTime(hour, minute, weekdays);
 
-    final soundFile = await AlarmSoundPreferences.alarmKitSoundFile();
+    final soundFile = (soundName != null && soundName.isNotEmpty)
+        ? soundName
+        : await AlarmSoundPreferences.alarmKitSoundFile();
     final assetAudioPath = 'assets/sounds/$soundFile';
 
     try {
@@ -386,6 +393,22 @@ class AlarmScheduleHelper {
       alarms,
       DateTime.now(),
     );
+    // 설정 화면에서 사용자가 직접 저장하는 흐름(setup 활성)에서는 실제로
+    // 울리는 미션이 화면에 떠 있을 수 없다 — 미션은 전면 잠금 UI다. 이때
+    // 이전에 방치된(아멘 없이 이탈한) 세션의 active/fired 잔재를 지워, 미래로
+    // 예약한 알람이 저장 직후 즉시 미션으로 재잠금되는 것을 막는다.
+    // allowSameDayRetest(=오늘 늦게 울릴 알람 존재)에 의존하지 않는다 —
+    // 오늘 요일이 알람에 없거나 재예약이 내일을 향해도 잔재는 지워야 한다.
+    // 완료 도장은 건드리지 않으므로 유령 부활 위험이 없다.
+    if (anyEnabled && AlarmSessionService.instance.isSetupScreenActive) {
+      await AlarmSessionService.instance.clearAbandonedMorningSession();
+      if (useNativeMorningAlarm) {
+        // 네이티브의 '진행 중 미션' 플래그와 지난 발화 epoch도 함께 리셋 —
+        // 안 지우면 syncMorningAlarmList가 조기 반환해 옛(지난) epoch가 남아
+        // isMorningCompletionRequired가 즉시 잠근다.
+        await NativeAlarmService.cancelMorningAlarmKitSchedule();
+      }
+    }
     if (anyEnabled && useNativeMorningAlarm && allowSameDayRetest) {
       // Explicit edits may happen after today's alarms were completed. Clear
       // the old native next-fire stamp before removing completion stamps, so
@@ -424,12 +447,24 @@ class AlarmScheduleHelper {
       );
     }
     if (anyEnabled && !useNativeMorningAlarm) {
-      final next = AlarmStore.nextOccurrence(alarms, DateTime.now());
+      final completedIds = <String>{};
+      for (final alarm in alarms) {
+        if (await AlarmSessionService.instance.isAlarmCompletedToday(alarm.id)) {
+          completedIds.add(alarm.id);
+        }
+      }
+      final nextInfo = AlarmStore.nextOccurrenceInfo(
+        alarms,
+        DateTime.now(),
+        isCompletedToday: completedIds.contains,
+      );
+      final next = nextInfo?.when;
       if (next != null) {
         await AlarmNotificationService.instance.scheduleMorningAlarm(
           hour: next.hour,
           minute: next.minute,
           weekdays: [next.weekday],
+          soundName: nextInfo?.alarm.soundName,
         );
       }
     } else {
@@ -513,12 +548,29 @@ class AlarmScheduleHelper {
       // 시간이 요일마다 같으면 기존처럼 반복 예약, 다르면 다음 발화 1건 예약
       // (앱 실행/완료 시마다 다시 굴려 준다).
       final uniqueTimes = effectiveDayTimes.values.toSet();
+      String? nextSound;
+      try {
+        final completedIds = <String>{};
+        for (final alarm in savedAlarms) {
+          if (await AlarmSessionService.instance.isAlarmCompletedToday(alarm.id)) {
+            completedIds.add(alarm.id);
+          }
+        }
+        final nextInfo = AlarmStore.nextOccurrenceInfo(
+          savedAlarms,
+          DateTime.now(),
+          isCompletedToday: completedIds.contains,
+        );
+        nextSound = nextInfo?.alarm.soundName;
+      } catch (_) {}
+
       if (uniqueTimes.length == 1) {
         final t = uniqueTimes.first;
         await AlarmNotificationService.instance.scheduleMorningAlarm(
           hour: t ~/ 60,
           minute: t % 60,
           weekdays: effectiveDayTimes.keys,
+          soundName: nextSound,
         );
       } else {
         final next = AlarmPreferences.nextOccurrenceFor(
@@ -530,6 +582,7 @@ class AlarmScheduleHelper {
             hour: next.hour,
             minute: next.minute,
             weekdays: [next.weekday],
+            soundName: nextSound,
           );
         }
       }
@@ -654,6 +707,7 @@ class AlarmScheduleHelper {
   /// Same id as the original morning alarm — Amen's Alarm.stop will cancel it.
   static Future<void> rearmMorningLiveAlarmFromNow({
     required Duration delay,
+    String? soundName,
   }) async {
     if (await _shouldUseAlarmKitForMorning()) {
       debugPrint(
@@ -662,7 +716,9 @@ class AlarmScheduleHelper {
       return;
     }
     final fireAt = DateTime.now().add(delay);
-    final soundFile = await AlarmSoundPreferences.alarmKitSoundFile();
+    final soundFile = (soundName != null && soundName.isNotEmpty)
+        ? soundName
+        : await AlarmSoundPreferences.alarmKitSoundFile();
     final assetAudioPath = 'assets/sounds/$soundFile';
 
     try {

@@ -20,10 +20,12 @@ class AlarmRingingScreen extends StatefulWidget {
     super.key,
     required this.kind,
     required this.onStartMission,
+    this.alarmId,
   });
 
   final AlarmRingingKind kind;
   final VoidCallback onStartMission;
+  final String? alarmId;
 
   @override
   State<AlarmRingingScreen> createState() => _AlarmRingingScreenState();
@@ -67,7 +69,7 @@ class _AlarmRingingScreenState extends State<AlarmRingingScreen>
       // Unlocking the device is what starts the mission (slide also works).
       NativeAlarmService.onDeviceUnlocked = _onDeviceUnlocked;
     } else {
-      unawaited(AlarmSoundService.instance.start());
+      unawaited(AlarmSoundService.instance.start(alarmId: widget.alarmId));
     }
   }
 

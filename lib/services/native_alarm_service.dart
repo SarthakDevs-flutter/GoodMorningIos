@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'alarm_sound_preferences.dart';
 import 'alarm_store.dart';
+import 'alarm_session_service.dart';
 
 enum NativeAlarmKind { morning, evening }
 
@@ -259,6 +260,7 @@ class NativeAlarmService {
             if (nextAlarmId != null) 'nextAlarmId': nextAlarmId,
             if (nextFireAt != null)
               'nextFireEpochMillis': nextFireAt.millisecondsSinceEpoch,
+            'isSetupActive': AlarmSessionService.instance.isSetupScreenActive,
           }) ??
           false;
     } on PlatformException catch (e) {
@@ -299,6 +301,7 @@ class NativeAlarmService {
           'nextFireEpochMillis': nextFireAt.millisecondsSinceEpoch,
         if (fireImmediatelyAlarmId != null)
           'fireImmediatelyAlarmId': fireImmediatelyAlarmId,
+        'isSetupActive': AlarmSessionService.instance.isSetupScreenActive,
       });
       debugPrint('[ALARM] peralarm sync: $counts');
       return counts;
@@ -473,8 +476,12 @@ class NativeAlarmService {
   static Future<void> pauseMorningRetriesForMission({String? alarmId}) async {
     if (!_ios && !_android) return;
     try {
+      var targetId = alarmId;
+      if (targetId == null || targetId.isEmpty) {
+        targetId = await AlarmSessionService.instance.activeAlarmId();
+      }
       await _channel.invokeMethod<bool>('pauseMorningRetriesForMission', {
-        if (alarmId != null && alarmId.isNotEmpty) 'alarmId': alarmId,
+        if (targetId != null && targetId.isNotEmpty) 'alarmId': targetId,
       });
     } on PlatformException catch (e) {
       debugPrint('pauseMorningRetriesForMission failed: $e');

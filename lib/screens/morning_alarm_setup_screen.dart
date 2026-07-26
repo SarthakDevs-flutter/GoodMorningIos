@@ -47,6 +47,7 @@ class _MorningAlarmSetupScreenState extends State<MorningAlarmSetupScreen> {
   @override
   void initState() {
     super.initState();
+    AlarmSessionService.instance.setSetupScreenActive(true);
     final alarm = widget.alarm;
     _alarmId = alarm?.id ?? AlarmStore.newAlarmId();
     _time = TimeOfDay(
@@ -62,6 +63,7 @@ class _MorningAlarmSetupScreenState extends State<MorningAlarmSetupScreen> {
 
   @override
   void dispose() {
+    AlarmSessionService.instance.setSetupScreenActive(false);
     _timeListenable.dispose();
     unawaited(AlarmSoundService.instance.stop());
     super.dispose();
@@ -113,7 +115,6 @@ class _MorningAlarmSetupScreenState extends State<MorningAlarmSetupScreen> {
       return;
     }
     setState(() => _enabled = value);
-    await _persist(enabled: value);
   }
 
   Future<void> _setWeekday(int weekday, bool selected) async {
@@ -132,23 +133,24 @@ class _MorningAlarmSetupScreenState extends State<MorningAlarmSetupScreen> {
       return;
     }
     setState(() => _weekdays = next);
-    await _persist();
   }
 
   Future<void> _showScheduledFeedback() async {
     final l10n = AppLocalizations.of(context);
-    final status = await AlarmNotificationService.instance
-        .scheduleFromPreferences();
+    final permitted = await AlarmNotificationService.instance.hasPermissions();
     if (!mounted) return;
-    if (!status.notificationsEnabled) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(l10n.enableNotificationsToRing)));
+    
+    if (!permitted) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(content: Text(l10n.enableNotificationsToRing)));
       return;
     }
+    
     final alarms = await AlarmStore.loadAlarms();
     final next = AlarmStore.nextOccurrence(alarms, DateTime.now());
     if (!mounted || next == null) return;
+    
     final label = AlarmPreferences.formatTime(next.hour, next.minute);
     final now = DateTime.now();
     final isToday =
@@ -156,9 +158,12 @@ class _MorningAlarmSetupScreenState extends State<MorningAlarmSetupScreen> {
     final dayHint = isToday
         ? ''
         : ' (${_weekdayShortLabel(l10n, next.weekday)})';
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(l10n.alarmScheduledNext('$label$dayHint'))),
-    );
+        
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(content: Text(l10n.alarmScheduledNext('$label$dayHint'))),
+      );
   }
 
   String _weekdayShortLabel(AppLocalizations l10n, int weekday) {
@@ -433,8 +438,6 @@ class _MorningAlarmSetupScreenState extends State<MorningAlarmSetupScreen> {
                             source,
                           ),
                         );
-                        // 기존 알람은 즉시 반영(새 알람은 저장 버튼에서).
-                        unawaited(_persist());
                       },
                     ),
                   ],

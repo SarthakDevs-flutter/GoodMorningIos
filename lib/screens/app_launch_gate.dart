@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../services/alarm_notification_service.dart';
 import '../services/alarm_session_service.dart';
+import '../services/alarm_store.dart';
 import '../services/alarm_schedule_helper.dart';
 import '../services/app_deferred_startup.dart';
 import '../services/app_launch_state.dart';
@@ -144,6 +145,11 @@ class _AppLaunchGateState extends State<AppLaunchGate>
     if (kIsWeb) return;
     if (_phase != _LaunchPhase.ready && !silent) return;
 
+    if (AlarmSessionService.instance.isSetupScreenActive) {
+      debugPrint('[GATE] setup screen active; ignore _checkAlarmLock');
+      return;
+    }
+
     await _consumeAlarmKitPendingMission();
 
     final morningRequired =
@@ -151,7 +157,12 @@ class _AppLaunchGateState extends State<AppLaunchGate>
         _alarmKitPendingMorningMission ||
         await AlarmSessionService.instance.isMorningAppLocked();
     if (morningRequired) {
-      await AlarmSessionService.instance.activateMorningAlarmSession();
+      if (_pendingMorningAlarmId == null || _pendingMorningAlarmId!.isEmpty) {
+        _pendingMorningAlarmId = await AlarmSessionService.instance.activeAlarmId();
+      }
+      await AlarmSessionService.instance.activateMorningAlarmSession(
+        alarmId: _pendingMorningAlarmId,
+      );
     }
     final eveningRequired =
         !morningRequired &&
@@ -173,11 +184,20 @@ class _AppLaunchGateState extends State<AppLaunchGate>
         unawaited(NativeAlarmService.resumeMorningRetryAfterMissionAbandoned());
         // 융단(10초 간격)은 울리는 지금 이 순간에만 깐다 — 평상시 저장/앱
         // 열기가 알림 수십 건을 만지던 낭비 제거(앱 전체 굼뜸의 원인).
-        unawaited(
-          AlarmNotificationService.instance.scheduleMorningRingCarpet(
+        unawaited(() async {
+          String? carpetSound;
+          if (_pendingMorningAlarmId != null && _pendingMorningAlarmId!.isNotEmpty) {
+            try {
+              final alarms = await AlarmStore.loadAlarms();
+              final alarm = alarms.firstWhere((a) => a.id == _pendingMorningAlarmId);
+              carpetSound = alarm.soundName;
+            } catch (_) {}
+          }
+          await AlarmNotificationService.instance.scheduleMorningRingCarpet(
             anchor: DateTime.now(),
-          ),
-        );
+            soundName: carpetSound,
+          );
+        }());
       } else if (eveningRequired) {
         debugPrint('[GATE] evening mission not visible — arm chase');
         unawaited(NativeAlarmService.resumeEveningRetryAfterMissionAbandoned());
@@ -227,6 +247,16 @@ class _AppLaunchGateState extends State<AppLaunchGate>
       if (await AlarmSessionService.instance.isAlarmCompletedToday(
         pending?.alarmId,
       )) {
+        return;
+      }
+      // Ignore a phantom pending mission that isn't actually due right now —
+      // e.g. a stale native missed-fire promotion for a future alarm (12:05
+      // saved at 12:00) or for a since-deleted alarm id. Validated against the
+      // real schedule so saving a future alarm can never pop the mission open.
+      if (!await AlarmSessionService.instance.isMorningMissionDueNow(
+        pending?.alarmId,
+      )) {
+        debugPrint('[GATE] ignore not-due morning pending mission (future/phantom)');
         return;
       }
       await AlarmSessionService.instance.activateMorningAlarmSession(
@@ -297,6 +327,7 @@ class _AppLaunchGateState extends State<AppLaunchGate>
         return AlarmRingingScreen(
           key: const ValueKey('morning-ringing'),
           kind: AlarmRingingKind.morning,
+          alarmId: _pendingMorningAlarmId,
           onStartMission: () {
             _androidPendingMorningRinging = false;
             if (!mounted) return;

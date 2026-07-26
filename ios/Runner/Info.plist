@@ -6,6 +6,14 @@
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>God Morning</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
 	<key>CFBundleLocalizations</key>
 	<array>
 		<string>en</string>
@@ -17,14 +25,6 @@
 		<string>zh</string>
 		<string>ja</string>
 	</array>
-	<key>CFBundleDisplayName</key>
-	<string>God Morning</string>
-	<key>CFBundleExecutable</key>
-	<string>$(EXECUTABLE_NAME)</string>
-	<key>CFBundleIdentifier</key>
-	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-	<key>CFBundleInfoDictionaryVersion</key>
-	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>God Morning</string>
 	<key>CFBundlePackageType</key>
@@ -35,10 +35,20 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
-	<key>LSRequiresIPhoneOS</key>
-	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>NSAlarmKitUsageDescription</key>
+	<string>God Morning uses system alarms to ring your scheduled morning prayer alarm, including when the app is closed.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>God Morning uses location only while you are using the app for optional local weather. Background location is not used.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>God Morning uses your approximate location only if you enable local weather, so it can request a local forecast from Open-Meteo. Your location is not stored by God Morning.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>God Morning uses the microphone only during the reading mission so you can read the displayed Scripture and prayer aloud. Audio is not stored by the app.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>God Morning uses speech recognition only to convert your spoken reading into text for mission progress. Speech transcripts are not uploaded to a God Morning server.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -72,16 +82,6 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>God Morning uses the microphone only during the reading mission so you can read the displayed Scripture and prayer aloud. Audio is not stored by the app.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>God Morning uses speech recognition only to convert your spoken reading into text for mission progress. Speech transcripts are not uploaded to a God Morning server.</string>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>God Morning uses your approximate location only if you enable local weather, so it can request a local forecast from Open-Meteo. Your location is not stored by God Morning.</string>
-	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>God Morning uses location only while you are using the app for optional local weather. Background location is not used.</string>
-	<key>NSAlarmKitUsageDescription</key>
-	<string>God Morning uses system alarms to ring your scheduled morning prayer alarm, including when the app is closed.</string>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

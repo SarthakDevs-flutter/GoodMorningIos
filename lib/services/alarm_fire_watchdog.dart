@@ -47,6 +47,11 @@ class AlarmFireWatchdog {
     final callback = _onFire;
     if (callback == null) return;
 
+    if (AlarmSessionService.instance.isSetupScreenActive) {
+      debugPrint('[WATCHDOG] Suppressed watchdog check: setup screen is active');
+      return;
+    }
+
     final now = DateTime.now();
     final dayKey = _dayKey(now);
     if (_lastDayKey != null && _lastDayKey != dayKey) {

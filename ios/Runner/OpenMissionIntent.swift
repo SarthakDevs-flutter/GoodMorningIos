@@ -10,7 +10,11 @@ import Foundation
 @available(iOS 26.0, *)
 struct OpenMissionFromAlarmIntent: LiveActivityIntent {
   static var title: LocalizedStringResource = "Stop Alarm"
+#if canImport(AlarmKit)
   static var supportedModes: IntentModes { .foreground(.immediate) }
+#else
+  static var openAppWhenRun: Bool { true }
+#endif
 
   @Parameter(title: "Source")
   var source: String

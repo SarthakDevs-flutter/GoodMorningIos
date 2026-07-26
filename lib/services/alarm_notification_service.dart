@@ -9,6 +9,8 @@ import 'alarm_preferences.dart';
 import 'alarm_registry.dart';
 import 'alarm_sound_preferences.dart';
 import 'native_alarm_service.dart';
+import 'alarm_store.dart';
+import 'alarm_session_service.dart';
 
 typedef NotificationTriggeredCallback = void Function(String payload);
 
@@ -243,12 +245,33 @@ class AlarmNotificationService {
     // (앱 실행/완료 시마다 다시 예약된다).
     final dayTimes = await AlarmPreferences.getDayTimes();
     final uniqueTimes = dayTimes.values.toSet();
+
+    String? nextSound;
+    try {
+      final alarms = await AlarmStore.loadAlarms();
+      final completedIds = <String>{};
+      for (final alarm in alarms) {
+        if (await AlarmSessionService.instance.isAlarmCompletedToday(alarm.id)) {
+          completedIds.add(alarm.id);
+        }
+      }
+      final nextInfo = AlarmStore.nextOccurrenceInfo(
+        alarms,
+        DateTime.now(),
+        isCompletedToday: completedIds.contains,
+      );
+      nextSound = nextInfo?.alarm.soundName;
+    } catch (e) {
+      debugPrint('Failed to resolve sound for morning notification schedule: $e');
+    }
+
     if (uniqueTimes.length == 1) {
       final t = uniqueTimes.first;
       await scheduleMorningAlarm(
         hour: t ~/ 60,
         minute: t % 60,
         weekdays: dayTimes.keys,
+        soundName: nextSound,
       );
       return;
     }
@@ -261,6 +284,7 @@ class AlarmNotificationService {
       hour: next.hour,
       minute: next.minute,
       weekdays: [next.weekday],
+      soundName: nextSound,
     );
   }
 
@@ -286,6 +310,7 @@ class AlarmNotificationService {
     required int hour,
     required int minute,
     Iterable<int>? weekdays,
+    String? soundName,
   }) async {
     if (await _shouldUseNativeMorningNotifications()) {
       await cancelMorningAlarm();
@@ -308,7 +333,7 @@ class AlarmNotificationService {
       'God Morning',
       'It is time to meet with the Lord.',
       scheduledTime,
-      await _morningNotificationDetails(),
+      await _morningNotificationDetails(soundName: soundName),
       androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
       matchDateTimeComponents:
           AlarmPreferences.normalizeWeekdays(weekdays).length == 7
@@ -324,7 +349,7 @@ class AlarmNotificationService {
       anchor: scheduledTime,
       title: 'God Morning',
       body: 'It is time to meet with the Lord.',
-      details: await _morningNotificationDetails(),
+      details: await _morningNotificationDetails(soundName: soundName),
       payload: morningAlarmPayload,
     );
 
@@ -668,12 +693,15 @@ class AlarmNotificationService {
   static const morningAbandonBackstopIntervalSeconds = 15;
   static const _abandonShortSound = 'god_morning_1.wav';
 
-  Future<void> scheduleMorningAbandonBackstop() async {
+  Future<void> scheduleMorningAbandonBackstop({String? soundName}) async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
     await cancelMorningAbandonBackstop();
     if (!await ensurePermissions()) return;
     // 14초 파일 고정 — 15초 간격과 절대 겹치지 않아 매발 소리가 난다.
-    const iosSound = _abandonShortSound;
+    // 사용자 지정음이 있으면 해당 지정음의 알림용 짧은 소리를 사용한다.
+    final iosSound = (soundName != null && soundName.isNotEmpty)
+        ? AlarmSoundPreferences.notificationSoundFileFor(soundName)
+        : _abandonShortSound;
     final details = NotificationDetails(
       iOS: DarwinNotificationDetails(
         presentAlert: false,
@@ -914,8 +942,10 @@ class AlarmNotificationService {
     );
   }
 
-  Future<NotificationDetails> _morningNotificationDetails() async {
-    final iosSound = await AlarmSoundPreferences.iosNotificationSoundFile();
+  Future<NotificationDetails> _morningNotificationDetails({String? soundName}) async {
+    final iosSound = (soundName != null && soundName.isNotEmpty)
+        ? AlarmSoundPreferences.notificationSoundFileFor(soundName)
+        : await AlarmSoundPreferences.iosNotificationSoundFile();
     return NotificationDetails(
       android: const AndroidNotificationDetails(
         'morning_alarm_channel',

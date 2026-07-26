@@ -14,7 +14,9 @@ import '../services/alarm_notification_service.dart';
 import '../services/alarm_persistence_service.dart';
 import '../services/alarm_schedule_helper.dart';
 import '../services/alarm_session_service.dart';
+import '../services/alarm_sound_preferences.dart';
 import '../services/alarm_sound_service.dart';
+import '../services/alarm_store.dart';
 import '../services/completion_service.dart';
 import '../services/locale_service.dart';
 import '../services/native_alarm_service.dart';
@@ -280,6 +282,76 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
 
   bool get _isEveningMission => widget.kind == MissionKind.evening;
 
+  AlarmSoundSource? _ownerAlarmSoundSource;
+  String? _resolvedAlarmId;
+  late Future<void> _ownerAlarmSoundLoadFuture;
+
+  Future<void> _loadOwnerAlarmSound() async {
+    if (widget.practiceMode) {
+      _ownerAlarmSoundSource = await AlarmSoundPreferences.getSource();
+      return;
+    }
+    if (_isEveningMission) {
+      _ownerAlarmSoundSource = await AlarmSoundPreferences.getSource();
+      return;
+    }
+    var alarmId = widget.alarmId;
+    if (alarmId == null || alarmId.isEmpty) {
+      alarmId = await AlarmSessionService.instance.activeAlarmId();
+    }
+    if (alarmId != null && alarmId.isNotEmpty) {
+      try {
+        final alarms = await AlarmStore.loadAlarms();
+        final alarm = alarms.firstWhere(
+          (a) => a.id == alarmId,
+          orElse: () => const MorningAlarm(id: '', hour: 0, minute: 0, weekdays: [], enabled: false),
+        );
+        if (alarm.id.isNotEmpty && alarm.soundName != null && alarm.soundName!.isNotEmpty) {
+          _ownerAlarmSoundSource = AlarmSoundPreferences.sourceForFileName(alarm.soundName);
+        }
+      } catch (e) {
+        debugPrint('Failed to load owner alarm sound in mission screen: $e');
+      }
+    }
+    
+    // If still null, try to dynamically resolve it using the same logic as AlarmSoundService
+    if (_ownerAlarmSoundSource == null) {
+      try {
+        final alarms = await AlarmStore.loadAlarms();
+        final now = DateTime.now();
+        final todayAlarms = alarms.where((a) => a.enabled && a.weekdays.contains(now.weekday)).toList();
+        if (todayAlarms.isNotEmpty) {
+          MorningAlarm? selectedAlarm;
+          if (todayAlarms.length == 1) {
+            selectedAlarm = todayAlarms.first;
+          } else {
+            final nowMinutes = now.hour * 60 + now.minute;
+            todayAlarms.sort((a, b) {
+              final diffA = (a.minutesOfDay - nowMinutes).abs();
+              final diffB = (b.minutesOfDay - nowMinutes).abs();
+              return diffA.compareTo(diffB);
+            });
+            selectedAlarm = todayAlarms.first;
+          }
+          if (selectedAlarm != null) {
+            alarmId = selectedAlarm.id;
+            if (selectedAlarm.soundName != null && selectedAlarm.soundName!.isNotEmpty) {
+              _ownerAlarmSoundSource = AlarmSoundPreferences.sourceForFileName(selectedAlarm.soundName);
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('Failed to dynamically resolve owner alarm sound: $e');
+      }
+    }
+    
+    _resolvedAlarmId = alarmId;
+    if (_resolvedAlarmId != null && _resolvedAlarmId!.isNotEmpty) {
+      await AlarmSessionService.instance.activateMorningAlarmSession(alarmId: _resolvedAlarmId);
+    }
+    _ownerAlarmSoundSource ??= await AlarmSoundPreferences.getSource();
+  }
+
   String get _contentLanguageCode => _devotional.languageCode;
 
   String get _speechFallbackLocaleId {
@@ -384,6 +456,7 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _ownerAlarmSoundLoadFuture = _loadOwnerAlarmSound();
     // 추격 취소는 '화면이 실제로 보인다'는 신호에서만 한다. 앱이 이미
     // 활성인 채 미션이 열리면 라이프사이클 전환 이벤트가 없으므로 여기서
     // 한 번 확인한다. 잠금 뒤(전원 버튼 stop)로 열린 미션은 resumed가
@@ -401,6 +474,21 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
         engaged = await NativeAlarmService.isDeviceInteractive();
       }
       if (engaged) {
+        // 미션이 실제로 열렸다 = 이 미션은 진행 중이다. 네이티브 '진행 중'
+        // 플래그를 세워야, 사용자가 녹음/타이핑을 시작하지 않고 배경 전환·
+        // 강제종료해도 sceneDidEnterBackground/Disconnect 훅이
+        // armMissionExitWatchdogsIfNeeded로 30초 추격을 재무장한다(아멘 전까지
+        // 알람이 반드시 돌아오도록). 잠금-뒤 분기(아래)는 이미 이 pause를 부른다
+        // — 화면-켜짐 분기에만 빠져 있던 비대칭이 '강제종료 후 침묵'의 뿌리.
+        // pause는 추격을 울리지 않고 플래그만 세우며, 미션 중 울리면 안 될
+        // 경쟁 알람만 정리한다(녹음 시작 경로와 동일, 멱등).
+        unawaited(
+          _isEveningMission
+              ? NativeAlarmService.pauseEveningRetriesForMission()
+              : NativeAlarmService.pauseMorningRetriesForMission(
+                  alarmId: _resolvedAlarmId,
+                ),
+        );
         unawaited(NativeAlarmService.cancelMorningMissionExitWatchdogs());
         // 이미 화면에 쌓인 배너는 미션이 뜨는 순간 치운다(예약 무접촉).
         unawaited(NativeAlarmService.clearDeliveredNotifications());
@@ -420,9 +508,15 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
           );
           // 대신 '죽어야만 들리는' 시리즈를 미리 깐다: 미션 중엔 완전
           // 무음(포그라운드 억제), 강제종료하면 시스템이 배달.
-          unawaited(
-            AlarmNotificationService.instance.scheduleMorningAbandonBackstop(),
-          );
+          unawaited(() async {
+            await _ownerAlarmSoundLoadFuture;
+            final carpetSound = _ownerAlarmSoundSource != null
+                ? AlarmSoundPreferences.fileNameFor(_ownerAlarmSoundSource!)
+                : null;
+            await AlarmNotificationService.instance.scheduleMorningAbandonBackstop(
+              soundName: carpetSound,
+            );
+          }());
         } else {
           unawaited(
             AlarmNotificationService.instance.cancelEveningRingCarpet(),
@@ -446,7 +540,11 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
         AlarmSessionService.instance.setLiveAlarmUiPhase(
           LiveAlarmUiPhase.ringing,
         );
-        unawaited(AlarmSoundService.instance.start());
+        unawaited(() async {
+          await _ownerAlarmSoundLoadFuture;
+          if (!mounted || _completed) return;
+          await AlarmSoundService.instance.start(sourceOverride: _ownerAlarmSoundSource);
+        }());
         _startForegroundAlarmKeepAlive();
         // 경로 불문 안전망: 이 미션이 게이트가 아니라 워치독 payload 등
         // 다른 경로로 열렸어도, 잠금 뒤 미션은 스스로 pause+추격+융단을
@@ -454,6 +552,8 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
         // 실행되지 않은 채 payload 경로로 열려 무장이 통째로 빠짐 —
         // 인앱 루프 하나에만 의존하다 침묵.
         unawaited(() async {
+          await _ownerAlarmSoundLoadFuture;
+          if (!mounted || _completed) return;
           if (_isEveningMission) {
             await NativeAlarmService.pauseEveningRetriesForMission();
             await NativeAlarmService.resumeEveningRetryAfterMissionAbandoned();
@@ -462,11 +562,15 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
             );
           } else {
             await NativeAlarmService.pauseMorningRetriesForMission(
-              alarmId: widget.alarmId,
+              alarmId: _resolvedAlarmId,
             );
             await NativeAlarmService.resumeMorningRetryAfterMissionAbandoned();
+            final carpetSound = _ownerAlarmSoundSource != null
+                ? AlarmSoundPreferences.fileNameFor(_ownerAlarmSoundSource!)
+                : null;
             await AlarmNotificationService.instance.scheduleMorningRingCarpet(
               anchor: DateTime.now(),
+              soundName: carpetSound,
             );
           }
         }());
@@ -711,8 +815,8 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
           AlarmNotificationService.instance.cancelMorningMainNotification(),
         );
         await NativeAlarmService.pauseMorningRetriesForMission(
-        alarmId: widget.alarmId,
-      );
+          alarmId: _resolvedAlarmId,
+        );
       }
       await AlarmSoundService.instance.stop();
     }();
@@ -752,7 +856,7 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
     if (_isEveningMission) {
       await AlarmNotificationService.instance.cancelEveningMainNotification();
       if (!mounted || _completed) return;
-      await AlarmSoundService.instance.start();
+      await AlarmSoundService.instance.start(sourceOverride: _ownerAlarmSoundSource);
       _startForegroundAlarmKeepAlive();
       return;
     }
@@ -763,7 +867,7 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
       await _resumeAlarmAfterAbandon();
     }
     if (!mounted || _completed) return;
-    await AlarmSoundService.instance.start();
+    await AlarmSoundService.instance.start(sourceOverride: _ownerAlarmSoundSource);
     _startForegroundAlarmKeepAlive();
   }
 
@@ -810,15 +914,19 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
         AlarmNotificationService.instance.cancelMorningMainNotification(),
       );
       await NativeAlarmService.pauseMorningRetriesForMission(
-        alarmId: widget.alarmId,
+        alarmId: _resolvedAlarmId,
       );
       if (stopCurrentSound) {
         await AlarmSoundService.instance.stop();
       }
       return;
     }
+    final resolvedSoundName = _ownerAlarmSoundSource != null
+        ? AlarmSoundPreferences.fileNameFor(_ownerAlarmSoundSource!)
+        : null;
     await AlarmScheduleHelper.rearmMorningLiveAlarmFromNow(
       delay: const Duration(minutes: 1),
+      soundName: resolvedSoundName,
     );
     if (stopCurrentSound) {
       await AlarmScheduleHelper.silenceMorningLiveAlarm();
@@ -998,7 +1106,7 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
     }
     await Future<void>.delayed(const Duration(milliseconds: 250));
     if (!mounted || !_foregroundInactivityRinging || _completed) return;
-    await AlarmSoundService.instance.start();
+    await AlarmSoundService.instance.start(sourceOverride: _ownerAlarmSoundSource);
     _startForegroundAlarmKeepAlive();
   }
 
@@ -1012,7 +1120,7 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
           _foregroundAlarmKeepAliveTimer = null;
           return;
         }
-        unawaited(AlarmSoundService.instance.ensurePlaying());
+        unawaited(AlarmSoundService.instance.ensurePlaying(sourceOverride: _ownerAlarmSoundSource));
       },
     );
   }
@@ -1134,10 +1242,22 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (widget.practiceMode) return;
     if (_completed) return;
+    // '떠나기'(백그라운드/강제종료)는 미션이 아직 시작 전이어도 재무장해야
+    // 한다 — 아멘 전까지 알람은 반드시 돌아와야 하므로, 사용자가 인트로만
+    // 보다 강제종료해도 침묵하면 안 된다. 반면 복귀(resumed) 인수인계는
+    // 미션이 실제로 시작됐거나 잠금-뒤 울림 대기 중일 때만 의미가 있다.
+    final leavingForeground =
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached ||
+        state == AppLifecycleState.hidden;
     // 잠금 뒤 울림 대기(_foregroundInactivityRinging)는 자동녹음이 아직
     // 시작 전이라 _missionActionStarted=false — 여기서 걸러버리면 화면을
     // 열어도 녹음 인수인계가 영영 못 돈다(잠금 진입 데드엔드).
-    if (!_missionActionStarted && !_foregroundInactivityRinging) return;
+    if (!leavingForeground &&
+        !_missionActionStarted &&
+        !_foregroundInactivityRinging) {
+      return;
+    }
 
     if (state == AppLifecycleState.resumed) {
       if (_foregroundInactivityRinging) {
@@ -1195,15 +1315,18 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
                   .cancelMorningRingCarpet();
               await NativeAlarmService.cancelMorningMissionExitWatchdogs();
               await NativeAlarmService.clearDeliveredNotifications();
+              final carpetSound = _ownerAlarmSoundSource != null
+                  ? AlarmSoundPreferences.fileNameFor(_ownerAlarmSoundSource!)
+                  : null;
               await AlarmNotificationService.instance
-                  .scheduleMorningAbandonBackstop();
+                  .scheduleMorningAbandonBackstop(soundName: carpetSound);
             }
           }());
         }
         // ensurePlaying은 이탈 시 stop이 내린 _wantPlaying=false에 막혀
         // 아무것도 못 살린다 — 복귀했는데 '울리는 중' UI만 있고 무음이던
         // 결함. start()는 이미 울리는 중이면 그대로 두고, 꺼졌으면 살린다.
-        unawaited(AlarmSoundService.instance.start());
+        unawaited(AlarmSoundService.instance.start(sourceOverride: _ownerAlarmSoundSource));
         return;
       }
       debugPrint('[MISSION] resumed during mission — keep AlarmKit quiet');
@@ -1218,8 +1341,11 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
         if (!_isEveningMission) {
           await AlarmNotificationService.instance.cancelMorningRingCarpet();
           // 강제종료 대비 무음 시리즈 재무장(미션 중엔 안 들린다).
+          final carpetSound = _ownerAlarmSoundSource != null
+              ? AlarmSoundPreferences.fileNameFor(_ownerAlarmSoundSource!)
+              : null;
           await AlarmNotificationService.instance
-              .scheduleMorningAbandonBackstop();
+              .scheduleMorningAbandonBackstop(soundName: carpetSound);
         } else {
           await AlarmNotificationService.instance.cancelEveningRingCarpet();
           await AlarmNotificationService.instance
@@ -1245,11 +1371,22 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
       AlarmSessionService.instance.setLiveAlarmUiPhase(
         LiveAlarmUiPhase.ringing,
       );
+      // 강제종료(detached)는 프로세스가 곧 죽어 5초 타이머가 돌 시간이 없다 —
+      // 여기서 즉시 재무장한다. 미완료 미션이면 무조건(녹음 시작 여부 무관):
+      // 아멘 전까지 알람은 돌아와야 한다. (네이티브 sceneDidDisconnect 훅도
+      // 30초 추격을 무장하지만, Dart 측 즉시 호출이 알림 백스톱까지 확실히
+      // 건다 — 이중 안전망.)
+      if (state == AppLifecycleState.detached) {
+        debugPrint('[MISSION] detached (force-quit) — re-arm immediately');
+        unawaited(_resumeAlarmAfterAbandon());
+        return;
+      }
       _missionExitWatchdogArmTimer?.cancel();
       _missionExitWatchdogArmTimer = Timer(const Duration(seconds: 5), () {
-        // 울림 중(_foregroundInactivityRinging) 이탈도 재무장해야 한다 —
-        // 인앱 루프는 백그라운드에서 곧 죽으므로 제외하면 완전 침묵.
-        if (!mounted || _completed || !_missionActionStarted) {
+        // 5초 뒤에도 백그라운드에 머물면(순간 blip이 아니면) 재무장한다.
+        // 녹음 시작 전이라도(_missionActionStarted=false) 미완료 미션이면
+        // 반드시 — 인트로만 보다 배경 전환해도 침묵하면 안 된다.
+        if (!mounted || _completed) {
           return;
         }
         debugPrint('[MISSION] app stayed away — re-arm AlarmKit watchdog');
@@ -1267,8 +1404,12 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
       await NativeAlarmService.resumeMorningRetryAfterMissionAbandoned();
       return;
     }
+    final resolvedSoundName = _ownerAlarmSoundSource != null
+        ? AlarmSoundPreferences.fileNameFor(_ownerAlarmSoundSource!)
+        : null;
     await AlarmScheduleHelper.rearmMorningLiveAlarmFromNow(
       delay: const Duration(seconds: 10),
+      soundName: resolvedSoundName,
     );
   }
 
@@ -1285,7 +1426,7 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
       );
       return;
     }
-    await AlarmSoundService.instance.start();
+    await AlarmSoundService.instance.start(sourceOverride: _ownerAlarmSoundSource);
   }
 
   Future<void> _startRecording({
@@ -1960,7 +2101,7 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
     }
 
     // onMorningCompleted is the ONLY place that cancels the alarm + burst.
-    await AlarmPersistenceService.onMorningCompleted(alarmId: widget.alarmId);
+    await AlarmPersistenceService.onMorningCompleted(alarmId: _resolvedAlarmId);
     await StreakService.onNormalMorningCompletion();
     if (!mounted) return;
     setState(() => _showCompletion = true);

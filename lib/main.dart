@@ -26,6 +26,7 @@ import 'services/app_deferred_startup.dart';
 import 'services/app_launch_state.dart';
 import 'services/locale_service.dart';
 import 'services/native_alarm_service.dart';
+import 'services/alarm_store.dart';
 import 'theme/app_theme.dart';
 
 Future<void> main() async {
@@ -104,6 +105,12 @@ Future<bool> _usesAlarmKitAudioModeNow() {
 }
 
 Future<void> _handleNativeMorningAlarmLaunch() async {
+  if (AlarmSessionService.instance.isSetupScreenActive) {
+    debugPrint('[NATIVE] setup screen active; ignore native morning launch');
+    await NativeAlarmService.consumePendingMission();
+    return;
+  }
+
   // Android full-screen intents can arrive while Flutter is already running,
   // without a reliable lifecycle resume signal. If boot is still in progress,
   // leave the pending flag for AppLaunchGate so it can show the ringing screen.
@@ -113,31 +120,60 @@ Future<void> _handleNativeMorningAlarmLaunch() async {
   }
 
   final pending = await NativeAlarmService.consumePendingMission();
-  if (pending?.kind != NativeAlarmKind.morning) return;
+  if (pending == null || pending.kind != NativeAlarmKind.morning) return;
+  if (await AlarmSessionService.instance.checkAndHandleConflict(
+    AlarmNotificationService.morningAlarmPayload,
+    alarmId: pending.alarmId,
+  )) {
+    return;
+  }
   if (await AlarmSessionService.instance.isAlarmCompletedToday(
-    pending?.alarmId,
+    pending.alarmId,
   )) {
     debugPrint('[NATIVE] morning alarm already completed; ignore launch');
     return;
   }
+  // Ignore a premature/phantom native launch whose scheduled time hasn't
+  // arrived (a stale missed-fire promotion, or a since-deleted alarm id) —
+  // otherwise a future alarm opens its mission the moment it is saved.
+  if (!await AlarmSessionService.instance.isMorningMissionDueNow(
+    pending.alarmId,
+  )) {
+    debugPrint('[NATIVE] morning trigger not due yet (future/phantom); ignore launch');
+    return;
+  }
   // 어떤 알람이 울렸는지 세션에 기록해 두면 아멘 때 그 알람만 완료 처리된다.
   await AlarmSessionService.instance.activateMorningAlarmSession(
-    alarmId: pending?.alarmId,
+    alarmId: pending.alarmId,
   );
   await _openAlarmFromNotification(
     AlarmNotificationService.morningAlarmPayload,
-    alarmId: pending?.alarmId,
+    alarmId: pending.alarmId,
   );
 }
 
 Future<void> _handleNativeEveningAlarmLaunch() async {
+  if (AlarmSessionService.instance.isSetupScreenActive) {
+    debugPrint('[NATIVE] setup screen active; ignore native evening launch');
+    await NativeAlarmService.consumePendingMission();
+    return;
+  }
+
   if (!AppLaunchState.bootComplete) {
     debugPrint('[NATIVE] boot pending; launch gate will show evening mission');
     return;
   }
 
+  if (await AlarmSessionService.instance.checkAndHandleConflict(
+    AlarmNotificationService.eveningAlarmPayload,
+  )) {
+    await NativeAlarmService.consumePendingMission();
+    return;
+  }
+
   final pending = await NativeAlarmService.consumePendingMission();
-  if (pending?.kind != NativeAlarmKind.evening) return;
+  if (pending == null || pending.kind != NativeAlarmKind.evening) return;
+
   await AlarmSessionService.instance.activateEveningAlarmSession();
   await _openEveningMissionNow(
     '[ALARMKIT] route evening blessing',
@@ -150,6 +186,18 @@ Future<void> _handleNativeEveningAlarmLaunch() async {
 /// AlarmKit owns the morning path, so stale alarm-package morning rings are
 /// stopped here before they can create a second sound or screen.
 void _onAlarmPackageRinging(alarm_pkg_set.AlarmSet ringingSet) {
+  if (AlarmSessionService.instance.isSetupScreenActive) {
+    debugPrint('[alarm-pkg] setup screen active; stop and ignore package rings');
+    for (final settings in ringingSet.alarms) {
+      try {
+        alarm_pkg.Alarm.stop(settings.id);
+      } catch (error) {
+        debugPrint('[alarm-pkg] stop failed: $error');
+      }
+    }
+    return;
+  }
+
   debugPrint('[alarm-pkg] ring callback: ${ringingSet.alarms.length} alarm(s)');
   // Only push the mission UI when the app is actually foregrounded. While the
   // phone is on the lock screen, leave the alarm-package sound ringing —
@@ -180,6 +228,30 @@ void _onAlarmPackageRinging(alarm_pkg_set.AlarmSet ringingSet) {
   }
 }
 
+Future<String?> _resolveClosestTodayAlarmId() async {
+  try {
+    final alarms = await AlarmStore.loadAlarms();
+    final now = DateTime.now();
+    final todayAlarms = alarms.where((a) => a.enabled && a.weekdays.contains(now.weekday)).toList();
+    if (todayAlarms.isNotEmpty) {
+      if (todayAlarms.length == 1) {
+        return todayAlarms.first.id;
+      } else {
+        final nowMinutes = now.hour * 60 + now.minute;
+        todayAlarms.sort((a, b) {
+          final diffA = (a.minutesOfDay - nowMinutes).abs();
+          final diffB = (b.minutesOfDay - nowMinutes).abs();
+          return diffA.compareTo(diffB);
+        });
+        return todayAlarms.first.id;
+      }
+    }
+  } catch (e) {
+    debugPrint('Failed to dynamically resolve alarm ID: $e');
+  }
+  return null;
+}
+
 Future<void> _handleMorningPackageRinging(
   int alarmId,
   bool isForeground,
@@ -200,7 +272,9 @@ Future<void> _handleMorningPackageRinging(
     debugPrint('[alarm-pkg] backgrounded — keep ringing, no UI push');
     return;
   }
-  await _openMorningMissionNow('[ALARM] package ringing');
+
+  final resolvedDbId = await _resolveClosestTodayAlarmId();
+  await _openMorningMissionNow('[ALARM] package ringing', alarmId: resolvedDbId);
 }
 
 Future<void> _handleEveningPackageRinging(
@@ -233,6 +307,11 @@ Future<void> _handleNotification(
   String payload, {
   bool persistent = false,
 }) async {
+  if (AlarmSessionService.instance.isSetupScreenActive) {
+    debugPrint('[ALARM] setup screen active; ignore _handleNotification for payload=$payload');
+    return;
+  }
+
   final isMorning = payload == AlarmNotificationService.morningAlarmPayload;
   final isEvening = payload == AlarmNotificationService.eveningAlarmPayload;
 
@@ -252,9 +331,14 @@ Future<void> _handleNotification(
     return;
   }
 
+  String? resolvedAlarmId;
+  if (isMorning) {
+    resolvedAlarmId = await _resolveClosestTodayAlarmId();
+  }
+
   if (!AppLaunchState.bootComplete) {
     if (isMorning || isEvening) {
-      await AlarmPersistenceService.onAlarmFired(payload);
+      await AlarmPersistenceService.onAlarmFired(payload, alarmId: resolvedAlarmId);
     }
     return;
   }
@@ -275,11 +359,15 @@ Future<void> _handleNotification(
     final phase = AlarmSessionService.instance.liveAlarmUiPhase;
     if (phase != LiveAlarmUiPhase.listening &&
         phase != LiveAlarmUiPhase.success) {
-      await AlarmPersistenceService.onAlarmFired(payload);
+      await AlarmPersistenceService.onAlarmFired(payload, alarmId: resolvedAlarmId);
     }
   }
 
-  await _openAlarmFromNotification(payload);
+  if (isMorning) {
+    await _openAlarmFromNotification(payload, alarmId: resolvedAlarmId);
+  } else {
+    await _openAlarmFromNotification(payload);
+  }
 }
 
 Future<void> _openAlarmFromNotification(
@@ -297,10 +385,23 @@ Future<void> _openAlarmFromNotification(
   final isMorning = payload == AlarmNotificationService.morningAlarmPayload;
   final isEvening = payload == AlarmNotificationService.eveningAlarmPayload;
 
+  var resolvedAlarmId = alarmId;
+  if (resolvedAlarmId == null && isMorning) {
+    final pending = await NativeAlarmService.consumePendingMission();
+    resolvedAlarmId = pending?.alarmId ?? await AlarmSessionService.instance.activeAlarmId();
+    if (resolvedAlarmId == null || resolvedAlarmId.isEmpty) {
+      resolvedAlarmId = await _resolveClosestTodayAlarmId();
+    }
+  }
+
+  if (await AlarmSessionService.instance.checkAndHandleConflict(payload, alarmId: resolvedAlarmId)) {
+    return;
+  }
+
   if (isMorning && await _usesIOSAlarmKitForMorningNow()) {
     await _openMorningMissionNow(
       '[ALARMKIT] route morning lock',
-      alarmId: alarmId,
+      alarmId: resolvedAlarmId,
     );
     return;
   }
@@ -320,7 +421,7 @@ Future<void> _openAlarmFromNotification(
         final phase = AlarmSessionService.instance.liveAlarmUiPhase;
         if (phase == LiveAlarmUiPhase.ringing) {
           if ((isMorning || isEvening) && !nativeOwnsMorningSound) {
-            await AlarmSoundService.instance.start();
+            await AlarmSoundService.instance.start(alarmId: resolvedAlarmId);
           }
         }
         return;
@@ -337,7 +438,7 @@ Future<void> _openAlarmFromNotification(
       }
 
       if ((isMorning || isEvening) && !nativeOwnsMorningSound) {
-        await AlarmSoundService.instance.start();
+        await AlarmSoundService.instance.start(alarmId: resolvedAlarmId);
       }
 
       final ringingKind = isMorning
@@ -352,7 +453,8 @@ Future<void> _openAlarmFromNotification(
           settings: RouteSettings(name: ringingRouteName),
           builder: (_) => AlarmRingingScreen(
             kind: ringingKind,
-            onStartMission: () => _pushMissionFromRinging(payload),
+            alarmId: resolvedAlarmId,
+            onStartMission: () => _pushMissionFromRinging(payload, alarmId: resolvedAlarmId),
           ),
         ),
       );
@@ -362,17 +464,29 @@ Future<void> _openAlarmFromNotification(
   }
 
   if ((isMorning || isEvening) && !nativeOwnsMorningSound) {
-    await AlarmSoundService.instance.start();
+    await AlarmSoundService.instance.start(alarmId: resolvedAlarmId);
   }
   debugPrint('Alarm UI: navigator not ready for $payload');
 }
 
 Future<void> _openMorningMissionNow(String reason, {String? alarmId}) async {
   debugPrint('$reason → push simple morning mission');
+  var resolvedAlarmId = alarmId;
+  if (resolvedAlarmId == null || resolvedAlarmId.isEmpty) {
+    resolvedAlarmId = await _resolveClosestTodayAlarmId();
+  }
+
+  if (await AlarmSessionService.instance.checkAndHandleConflict(
+    AlarmNotificationService.morningAlarmPayload,
+    alarmId: resolvedAlarmId,
+  )) {
+    return;
+  }
+
   final nativeOwnsMorningSound =
       await _usesIOSAlarmKitForMorningNow() ||
       (!kIsWeb && defaultTargetPlatform == TargetPlatform.android);
-  if (await AlarmSessionService.instance.isAlarmCompletedToday(alarmId)) {
+  if (await AlarmSessionService.instance.isAlarmCompletedToday(resolvedAlarmId)) {
     // Stale trigger after Amen (leftover notification, late retry) — today's
     // mission for this alarm is done, never open a second one.
     debugPrint(
@@ -380,11 +494,17 @@ Future<void> _openMorningMissionNow(String reason, {String? alarmId}) async {
     );
     return;
   }
+  if (!await AlarmSessionService.instance.isMorningMissionDueNow(resolvedAlarmId)) {
+    // Premature/phantom trigger whose scheduled time today hasn't arrived —
+    // never open a future alarm's mission early.
+    debugPrint('[MISSION] morning trigger not due yet (future/phantom) — ignore');
+    return;
+  }
   if (nativeOwnsMorningSound) {
     // AlarmKit (iOS 26+) and the Android native audio service own the alert
     // sound on their platforms — never start the in-app loop on top of them.
     await AlarmSessionService.instance.activateMorningAlarmSession(
-      alarmId: alarmId,
+      alarmId: resolvedAlarmId,
     );
   }
   if (AlarmSessionService.instance.isBlockingUiVisible) {
@@ -399,7 +519,7 @@ Future<void> _openMorningMissionNow(String reason, {String? alarmId}) async {
     // pending mission and waiting for the retry ladder.
     if (phase != LiveAlarmUiPhase.success) {
       if (phase == LiveAlarmUiPhase.ringing && !nativeOwnsMorningSound) {
-        await AlarmSoundService.instance.start();
+        await AlarmSoundService.instance.start(alarmId: resolvedAlarmId);
       }
       return;
     }
@@ -408,12 +528,13 @@ Future<void> _openMorningMissionNow(String reason, {String? alarmId}) async {
     if (AlarmSessionService.instance.isBlockingUiVisible &&
         AlarmSessionService.instance.liveAlarmUiPhase ==
             LiveAlarmUiPhase.ringing) {
-      await AlarmSoundService.instance.start();
+      await AlarmSoundService.instance.start(alarmId: resolvedAlarmId);
     } else {
       // Legacy iOS: start the in-app alarm loop so the alarm keeps ringing
       // until the mission's auto-record takes over the microphone.
       await AlarmPersistenceService.onAlarmFired(
         AlarmNotificationService.morningAlarmPayload,
+        alarmId: resolvedAlarmId,
       );
     }
   }
@@ -440,7 +561,7 @@ Future<void> _openMorningMissionNow(String reason, {String? alarmId}) async {
     liveAlarmPageRoute<void>(
       settings: const RouteSettings(name: '/morning-alarm'),
       builder: (_) => SimpleMorningMissionScreen(
-        alarmId: alarmId,
+        alarmId: resolvedAlarmId,
         onCompleted: () {
           AlarmSessionService.instance.setBlockingUiVisible(false);
           navigatorKey.currentState?.pushAndRemoveUntil(
@@ -459,6 +580,11 @@ Future<void> _openEveningMissionNow(
   bool forceFromPending = false,
 }) async {
   debugPrint('$reason → push evening blessing mission');
+  if (await AlarmSessionService.instance.checkAndHandleConflict(
+    AlarmNotificationService.eveningAlarmPayload,
+  )) {
+    return;
+  }
   if (!forceFromPending &&
       await AlarmSessionService.instance.hasCompletedEveningToday()) {
     debugPrint('[MISSION] evening blessing already completed today');
@@ -509,8 +635,8 @@ Future<void> _openEveningMissionNow(
 
 /// Called by AlarmRingingScreen's dismiss button — swap it for the prayer mission.
 /// pushReplacement so popping the mission returns to home, not back to ringing.
-Future<void> _pushMissionFromRinging(String payload) async {
-  debugPrint('[MISSION] _pushMissionFromRinging called payload=$payload');
+Future<void> _pushMissionFromRinging(String payload, {String? alarmId}) async {
+  debugPrint('[MISSION] _pushMissionFromRinging called payload=$payload alarmId=$alarmId');
   final isMorning = payload == AlarmNotificationService.morningAlarmPayload;
   final isEvening = payload == AlarmNotificationService.eveningAlarmPayload;
   if (!isMorning && !isEvening) return;
@@ -527,6 +653,7 @@ Future<void> _pushMissionFromRinging(String payload) async {
       liveAlarmPageRoute<void>(
         settings: const RouteSettings(name: '/morning-alarm'),
         builder: (_) => SimpleMorningMissionScreen(
+          alarmId: alarmId,
           onCompleted: () {
             AlarmSessionService.instance.setBlockingUiVisible(false);
             navigatorKey.currentState?.pushAndRemoveUntil(
