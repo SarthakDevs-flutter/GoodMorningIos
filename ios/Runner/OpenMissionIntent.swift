@@ -40,6 +40,14 @@ struct OpenMissionFromAlarmIntent: LiveActivityIntent {
   }
 
   func perform() async throws -> some IntentResult {
+    // 이 stop intent가 실행된 시각을 기록한다. 미션 화면이 이 값을 읽어
+    // '사이드 버튼에서 온 미션'과 '사용자가 직접 시작한 미션'을 구분한다.
+    // Face ID가 사이드 버튼과 동시에 잠금을 풀면 isDeviceInteractive가
+    // 거짓 양성을 반환해 engaged 분기로 잘못 들어가는 것을 방지한다.
+    UserDefaults.standard.set(
+      Date().timeIntervalSince1970,
+      forKey: "grace_stop_intent_ts"
+    )
     // If today's mission is already done (Amen), ignore stray retry-ladder
     // alarms — don't route the user back into the mission.
     let today = Self.todayKey()

@@ -162,8 +162,10 @@ class AlarmSoundPreferences {
   /// full tone is intentionally kept for AlarmKit and in-app playback, while
   /// notification retries use a shorter excerpt of that same tone.
   static String notificationSoundFileFor(String fileName) {
-    if (fileName == 'god_morning_9.wav') {
-      return 'god_morning_9_notification.wav';
+    if (fileName == 'god_morning_9.wav' || fileName == 'god_morning_10.wav') {
+      // 30초 초과 파일은 iOS 로컬 알림(백스톱/융단)에서 무음(진동만 발생) 처리되므로,
+      // 안전하고 검증된 15초짜리 god_morning_1.wav로 대체하여 항상 소리가 나도록 합니다.
+      return 'god_morning_1.wav';
     }
     return fileName;
   }

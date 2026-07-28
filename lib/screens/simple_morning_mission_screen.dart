@@ -607,6 +607,8 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
           AppLifecycleState.resumed) {
         return;
       }
+      // 잠금 뒤에서 대기하고 있는 상태(_lockedEntryRinging)이면 120초 창을 연장하지 않는다 (chase 유지)
+      if (_lockedEntryRinging) return;
       // 하드웨어 신호로 '실제로 보는 중'일 때만 창을 연장한다 — 잠금 뒤
       // 포그라운드(전원버튼 케이스)에서는 연장하지 않아 추격이 복귀한다.
       if (!await NativeAlarmService.isDeviceInteractive()) return;

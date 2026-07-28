@@ -394,6 +394,17 @@ class NativeAlarmService {
     }
   }
 
+  /// stop intent(사이드 버튼/알람 정지)를 통해 앱이 갓 기동된 상태인지 확인한다.
+  /// Face ID로 인한 isDeviceInteractive() 거짓 양성을 방지하기 위한 안전장치.
+  static Future<bool> wasOpenedFromStopIntent() async {
+    if (!_ios) return false;
+    try {
+      return await _channel.invokeMethod<bool>('isRecentStopIntent') ?? false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
   /// Amen: stamp today as completed so stray retry-ladder alarms are ignored.
   /// [alarmId]가 있으면 그 알람만 오늘 완료 처리된다(같은 날 다른 알람은
   /// 그대로 울린다).

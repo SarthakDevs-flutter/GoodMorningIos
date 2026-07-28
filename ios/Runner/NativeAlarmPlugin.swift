@@ -356,6 +356,14 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
           && UIScreen.main.brightness > 0.01
       )
 
+    case "isRecentStopIntent":
+      // stop intent(사이드 버튼/알람 정지)에서 온 미션인지 판단한다.
+      // 10초 이내면 '사이드 버튼에서 온 미션' — engaged 판정을 무시하고
+      // locked 분기로 진입해야 한다(Face ID 거짓 양성 방지).
+      let ts = UserDefaults.standard.double(forKey: "grace_stop_intent_ts")
+      let elapsed = Date().timeIntervalSince1970 - ts
+      result(ts > 0 && elapsed < 10)
+
     case "isMorningMissionInProgress":
       guard #available(iOS 26.0, *) else {
         result(false)
@@ -2111,8 +2119,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         != todayKey()
     else { return }
 
-    cancelEveningChase()
-
+    // 재등록 비동기 루프 도중에 강제종료될 경우를 대비해 일괄 취소를 건너뛰고,
+    // 루프 안에서 개별적으로 덮어씌웁니다. 기존 예약을 안전망으로 남겨둡니다.
     // 저녁 추격은 저녁 등록에 실제 쓰인 소리로 — 아침 알람별 소리를
     // 빌려 쓰면 소리 정체성이 갈린다.
     let sound = validatedMorningAlarmKitSoundName(
@@ -2287,7 +2295,13 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
   private static func scheduleMorningMissionAbandonLadder(reason: String) async throws {
     guard isMorningMissionInProgress() else { return }
 
-    cancelMorningMissionExitLadder()
+    // 이전 비동기 예약 루프를 중단하기 위해 generation만 올리고, AlarmKit 알람들을 통째로
+    // 일괄 삭제하지는 않습니다. 프로세스가 즉시 강제종료될 경우를 위해 기존 알람을 안전망으로 유지합니다.
+    let defaults = UserDefaults.standard
+    defaults.set(
+      defaults.integer(forKey: morningMissionExitGenerationKey) + 1,
+      forKey: morningMissionExitGenerationKey
+    )
     let soundName = missionOwnerChaseSoundName()
     // 추격 알람이 발화할 때 stop intent에 '주인 알람 id'가 실려야 Dart에서
     // 올바른 소리를 재선택한다 — intentAlarmId 없으면 scheduleOneMissionAlarm

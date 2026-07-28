@@ -225,11 +225,14 @@ class AlarmSessionService {
 
   /// After today's alarm time, morning prayer must be finished to dismiss the alarm.
   Future<bool> isMorningCompletionRequired() async {
-    if (await hasCompletedMorningToday()) return false;
-
     final now = DateTime.now();
-    final activeToday = await hasActiveMorningSessionToday();
-    if (activeToday) return true;
+    final prefs = await SharedPreferences.getInstance();
+    final activeId = prefs.getString(_morningActiveAlarmIdKey);
+    if (activeId != null && activeId.isNotEmpty) {
+      if (!await isAlarmCompletedToday(activeId)) {
+        return true;
+      }
+    }
 
     if (!await AlarmPreferences.isEnabled()) return false;
 
@@ -408,7 +411,14 @@ class AlarmSessionService {
   }
 
   Future<bool> isAnyAlarmSessionActive() async {
-    final morningActive = await hasActiveMorningSessionToday() && !await hasCompletedMorningToday();
+    final prefs = await SharedPreferences.getInstance();
+    final activeId = prefs.getString(_morningActiveAlarmIdKey);
+    bool morningActive = false;
+    if (activeId != null && activeId.isNotEmpty) {
+      if (await hasActiveMorningSessionToday() && !await isAlarmCompletedToday(activeId)) {
+        morningActive = true;
+      }
+    }
     if (morningActive) return true;
     final eveningActive = await hasActiveEveningSessionToday() && !await hasCompletedEveningToday();
     return eveningActive;
@@ -430,11 +440,16 @@ class AlarmSessionService {
   /// date/id, so a racing second alarm sees the claim on its own pass and skips.
   Future<bool> checkAndHandleConflict(String payload, {String? alarmId}) async {
     return _conflictLock.synchronized(() async {
+      final prefs = await SharedPreferences.getInstance();
       final isMorning = payload == AlarmNotificationService.morningAlarmPayload;
       final isEvening = payload == AlarmNotificationService.eveningAlarmPayload;
 
-      final isMorningActive = await hasActiveMorningSessionToday() &&
-          !await hasCompletedMorningToday();
+      final activeId = prefs.getString(_morningActiveAlarmIdKey);
+      final isMorningActive = activeId != null &&
+          activeId.isNotEmpty &&
+          (prefs.getString(_morningActiveDateKey) == _todayKey(DateTime.now()) ||
+           prefs.getString(_morningFiredDateKey) == _todayKey(DateTime.now())) &&
+          !await isAlarmCompletedToday(activeId);
       final isEveningActive = await hasActiveEveningSessionToday() &&
           !await hasCompletedEveningToday();
 
@@ -447,7 +462,6 @@ class AlarmSessionService {
           debugPrint('[CONFLICT] Ignoring premature morning trigger ($alarmId) — its scheduled time today has not arrived.');
           return true;
         }
-        final activeId = await activeAlarmId();
         bool shouldSkip = false;
         if (isEveningActive) {
           // An evening session is live → only one alarm at a time.
@@ -458,9 +472,6 @@ class AlarmSessionService {
           if (alarmId != null && alarmId.isNotEmpty && alarmId != activeId) {
             shouldSkip = true;
           }
-        } else if (await hasCompletedMorningToday()) {
-          // The morning mission has been completed today — any morning alarm should skip.
-          shouldSkip = true;
         } else if (alarmId != null &&
             alarmId.isNotEmpty &&
             await isAlarmCompletedToday(alarmId)) {
@@ -655,29 +666,8 @@ class AlarmSessionService {
     }
 
     // 2. Proactively cancel upcoming morning alarms natively
-    try {
-      final alarms = await AlarmStore.loadAlarms();
-      final activeId = await activeAlarmId();
-      for (final alarm in alarms) {
-        if (!alarm.enabled || !alarm.weekdays.contains(now.weekday)) continue;
-        if (alarm.id == activeId) continue;
-        final scheduledTime = DateTime(
-          now.year,
-          now.month,
-          now.day,
-          alarm.hour,
-          alarm.minute,
-        );
-        if (scheduledTime.isAfter(now)) {
-          debugPrint('[CONFLICT] Proactively cancelling upcoming morning alarm (${alarm.id}) natively.');
-          await markAlarmCompletedToday(alarm.id);
-          await NativeAlarmService.markMorningMissionCompleted(alarmId: alarm.id);
-          await NativeAlarmService.stopMorningAlarmKitAlert();
-        }
-      }
-    } catch (e) {
-      debugPrint('[CONFLICT] Failed to proactively cancel morning alarms: $e');
-    }
+    // 다중 알람의 독립적인 동작을 위해 미래의 아침 알람들을 선제 취소하지 않습니다.
+    // 각 알람의 충돌 및 중첩 회피 처리는 실제 울리는 시점(checkAndHandleConflict)에서 동적으로 판단합니다.
   }
 
   /// Sweeps all enabled alarms whose scheduled times for today are in the past,
