@@ -163,6 +163,10 @@ class _AppLaunchGateState extends State<AppLaunchGate>
       await AlarmSessionService.instance.activateMorningAlarmSession(
         alarmId: _pendingMorningAlarmId,
       );
+      // 네이티브 진행 중 플래그 즉시 동기화 (스플래시 극초기 강제종료 대비 안전망)
+      unawaited(NativeAlarmService.pauseMorningRetriesForMission(
+        alarmId: _pendingMorningAlarmId,
+      ));
     }
     final eveningRequired =
         !morningRequired &&
@@ -170,6 +174,8 @@ class _AppLaunchGateState extends State<AppLaunchGate>
             await AlarmSessionService.instance.isEveningAppLocked());
     if (eveningRequired) {
       await AlarmSessionService.instance.activateEveningAlarmSession();
+      // 저녁 네이티브 진행 중 플래그 동기화
+      unawaited(NativeAlarmService.pauseEveningRetriesForMission());
     }
     debugPrint('[GATE] morning=$morningRequired evening=$eveningRequired');
     // 화면이 안 보이는 상태(잠금 뒤/화면 꺼짐)에서 미션을 강제로 여는 경우 =

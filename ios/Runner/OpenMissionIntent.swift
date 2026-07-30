@@ -67,6 +67,11 @@ struct OpenMissionFromAlarmIntent: LiveActivityIntent {
       return .result()
     }
     if kind == "morning" {
+      // 즉시 정지: swiped된 알람의 소리를 perform() 최상단에서 끈다.
+      // 나머지 무장·메아리 로직보다 먼저 실행되어 사용자에게 즉각 반응.
+      if !alarmId.isEmpty, let uuid = UUID(uuidString: alarmId) {
+        try? AlarmManager.shared.stop(id: uuid)
+      }
       // 울린 알람이 이 미션의 주인 — 이후 추격 재무장 슬롯들이 이 id를
       // 싣는다(다음 알람 id가 실리면 그 알람이 오완료되는 사고 방지).
       if !alarmId.isEmpty {
@@ -95,6 +100,10 @@ struct OpenMissionFromAlarmIntent: LiveActivityIntent {
       // 한 번 더. 이미 성공해 있으면 같은 고정 id 교체라 무해.
       await NativeAlarmPlugin.armStopEcho(kind: "morning")
     } else if kind == "evening" {
+      // 즉시 정지: swiped된 알람의 소리를 먼저 끈다.
+      if !alarmId.isEmpty, let uuid = UUID(uuidString: alarmId) {
+        try? AlarmManager.shared.stop(id: uuid)
+      }
       // 아침과 동일한 메아리-먼저 순서.
       await NativeAlarmPlugin.armStopEcho(kind: "evening")
       try? await NativeAlarmPlugin.pauseEveningRetriesForMission()

@@ -479,6 +479,17 @@ class NativeAlarmService {
     }
   }
 
+  /// 미션 화면 진입 즉시 모든 AlarmKit 알람음을 강제 정지한다.
+  /// cancel은 하지 않으므로 추격 사다리는 보존되고 소리만 즉각 멎는다.
+  static Future<void> stopAllActiveSounds() async {
+    if (!_ios) return;
+    try {
+      await _channel.invokeMethod<bool>('stopAllActiveSounds');
+    } on PlatformException catch (e) {
+      debugPrint('stopAllActiveSounds failed: $e');
+    }
+  }
+
   /// User started the actual mission action (record/type). Stop current
   /// AlarmKit retry sounds and backup watchdogs so STT is quiet. If the app
   /// leaves before Amen, native lifecycle hooks re-arm the exit watchdog.

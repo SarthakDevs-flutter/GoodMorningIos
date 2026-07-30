@@ -144,6 +144,14 @@ class _EveningBlessingScreenState extends State<EveningBlessingScreen>
   @override
   void initState() {
     super.initState();
+    if (widget.isLiveAlarm) {
+      unawaited(NativeAlarmService.stopAllActiveSounds());
+      unawaited(AlarmSoundService.instance.stop());
+      unawaited(NativeAlarmService.clearDeliveredNotifications());
+      unawaited(NativeAlarmService.cancelMorningMissionExitWatchdogs());
+      unawaited(AlarmNotificationService.instance.cancelEveningMainNotification());
+      unawaited(AlarmNotificationService.instance.cancelEveningRingCarpet());
+    }
     WidgetsBinding.instance.addObserver(this);
     _speech = stt.SpeechToText();
 
@@ -193,6 +201,7 @@ class _EveningBlessingScreenState extends State<EveningBlessingScreen>
       LiveAlarmUiPhase.listening,
     );
     unawaited(NativeAlarmService.pauseEveningRetriesForMission());
+    unawaited(NativeAlarmService.cancelMorningMissionExitWatchdogs());
     await AlarmSoundService.instance.stop();
     await Future<void>.delayed(const Duration(milliseconds: 450));
     if (!mounted || !_isLockedLiveAlarm || _state == EveningAppState.success) {
@@ -449,6 +458,7 @@ class _EveningBlessingScreenState extends State<EveningBlessingScreen>
     }
 
     _lastMissionQuietRefreshAt = now;
+    unawaited(NativeAlarmService.cancelMorningMissionExitWatchdogs());
     unawaited(_extendMissionQuietWindow(stopCurrentSound: wasRinging));
   }
 

@@ -455,6 +455,22 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
   @override
   void initState() {
     super.initState();
+    if (!widget.practiceMode) {
+      unawaited(NativeAlarmService.stopAllActiveSounds());
+      unawaited(AlarmSoundService.instance.stop());
+      unawaited(NativeAlarmService.clearDeliveredNotifications());
+      unawaited(NativeAlarmService.cancelMorningMissionExitWatchdogs());
+      unawaited(
+        _isEveningMission
+            ? AlarmNotificationService.instance.cancelEveningMainNotification()
+            : AlarmNotificationService.instance.cancelMorningMainNotification(),
+      );
+      if (!_isEveningMission) {
+        unawaited(AlarmNotificationService.instance.cancelMorningRingCarpet());
+      } else {
+        unawaited(AlarmNotificationService.instance.cancelEveningRingCarpet());
+      }
+    }
     WidgetsBinding.instance.addObserver(this);
     _ownerAlarmSoundLoadFuture = _loadOwnerAlarmSound();
     // 추격 취소는 '화면이 실제로 보인다'는 신호에서만 한다. 앱이 이미
@@ -463,6 +479,10 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
     // 아니라서 추격이 살아남아 계속 울린다 — 그게 의도다.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted || widget.practiceMode || _completed) return;
+      // 즉시 모든 active 알람 소스 정지 (시스템 및 인앱)
+      unawaited(NativeAlarmService.stopAllActiveSounds());
+      unawaited(AlarmSoundService.instance.stop());
+
       // lifecycle은 잠금 뒤에서도 resumed라 못 믿는다 — 하드웨어 신호로.
       // 그 신호도 '순간'은 못 믿는다: 전원 버튼을 누르는 손짓에 Face ID가
       // 잠금을 풀면 순간 참이 된다 — 1.5초 뒤에도 유지될 때만 참여로
@@ -526,31 +546,10 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
           );
         }
       } else {
-        // 잠금 뒤에서 열린 미션 = 잠든 사용자. 인앱 알람 루프를 즉시 켠다
-        // (재생 세션 폴백 덕에 잠금·무음 스위치에서도 울린다). 오디오 재생
-        // 중인 앱은 화면이 꺼져도 동면하지 않아 소리가 끊기지 않는다 —
-        // 예전 엔진의 '앱이 직접 우는' 방식의 부활. 화면을 열면 기존
-        // '울리는 중 복귀' UX(직접 탭으로 재개)가 이어받는다.
+        // 잠금 뒤에서 열린 미션 (전원/사이드 버튼을 눌러 화면이 꺼졌거나 잠금 화면 뒤로 전환된 경우)
+        // 인앱 알람 소리를 즉시 켜서 사용자 정지 액션을 방해하지 않는다.
+        // 대신 시스템 AlarmKit 알람(Stop Echo 및 워치독)이 22초 뒤에 네이티브로 울릴 수 있도록 예약만 안전하게 유지/재무장한다.
         if (!mounted || _completed) return;
-        _lockedEntryRinging = true;
-        setState(() {
-          _foregroundInactivityRinging = true;
-          _inactivityAlarmRequiresUserResume = true;
-        });
-        AlarmSessionService.instance.setLiveAlarmUiPhase(
-          LiveAlarmUiPhase.ringing,
-        );
-        unawaited(() async {
-          await _ownerAlarmSoundLoadFuture;
-          if (!mounted || _completed) return;
-          await AlarmSoundService.instance.start(sourceOverride: _ownerAlarmSoundSource);
-        }());
-        _startForegroundAlarmKeepAlive();
-        // 경로 불문 안전망: 이 미션이 게이트가 아니라 워치독 payload 등
-        // 다른 경로로 열렸어도, 잠금 뒤 미션은 스스로 pause+추격+융단을
-        // 무장한다(전부 멱등). 실측 2026-07-10 20:30: stop 인텐트가
-        // 실행되지 않은 채 payload 경로로 열려 무장이 통째로 빠짐 —
-        // 인앱 루프 하나에만 의존하다 침묵.
         unawaited(() async {
           await _ownerAlarmSoundLoadFuture;
           if (!mounted || _completed) return;
@@ -709,7 +708,7 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
     // attaches its AVAudioEngine input tap; making this too short causes
     // choppy first-pass dictation on device.
     try {
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await Future<void>.delayed(const Duration(milliseconds: 300));
       if (!mounted || _completed) return;
       // 함수 진입 시점엔 잠금 판정(비동기)이 아직 안 끝났을 수 있다 —
       // 딜레이 후 재확인 없이는 quiet가 방금 켜진 인앱 루프를 죽인다
@@ -891,6 +890,7 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
       await AlarmSoundService.instance.stop();
       return;
     }
+    unawaited(NativeAlarmService.cancelMorningMissionExitWatchdogs());
     await _extendMissionQuietWindow(stopCurrentSound: true);
     _resetMissionInactivityWindow(
       force: true,
