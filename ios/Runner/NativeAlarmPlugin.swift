@@ -225,6 +225,147 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
   private static let missionAbandonIntervalSeconds = 30
   @MainActor private static var morningMissionExitRearmInFlight = false
 
+  // In-memory cache variables to survive locked UserDefaults encryption on iOS 18+
+  private static var cachedMorningInProgress: Bool?
+  private static var cachedMorningStartedDate: String?
+  private static var cachedMorningCompletedDate: String?
+  private static var cachedMorningActiveAlarmId: String?
+  private static var cachedEveningInProgress: Bool?
+  private static var cachedEveningStartedDate: String?
+  private static var cachedEveningCompletedDate: String?
+
+  static func setMorningInProgress(_ value: Bool) {
+    cachedMorningInProgress = value
+    UserDefaults.standard.set(value, forKey: morningMissionInProgressKey)
+  }
+
+  static func getMorningInProgress() -> Bool {
+    if let cached = cachedMorningInProgress {
+      return cached
+    }
+    let value = UserDefaults.standard.bool(forKey: morningMissionInProgressKey)
+    if value || UIApplication.shared.isProtectedDataAvailable {
+      cachedMorningInProgress = value
+    }
+    return value
+  }
+
+  static func setMorningStartedDate(_ value: String?) {
+    cachedMorningStartedDate = value
+    if let val = value {
+      UserDefaults.standard.set(val, forKey: morningMissionStartedDateKey)
+    } else {
+      UserDefaults.standard.removeObject(forKey: morningMissionStartedDateKey)
+    }
+  }
+
+  static func getMorningStartedDate() -> String? {
+    if let cached = cachedMorningStartedDate {
+      return cached
+    }
+    if let value = UserDefaults.standard.string(forKey: morningMissionStartedDateKey) {
+      cachedMorningStartedDate = value
+      return value
+    }
+    return nil
+  }
+
+  static func setMorningCompletedDate(_ value: String?) {
+    cachedMorningCompletedDate = value
+    if let val = value {
+      UserDefaults.standard.set(val, forKey: morningMissionCompletedDateKey)
+    } else {
+      UserDefaults.standard.removeObject(forKey: morningMissionCompletedDateKey)
+    }
+  }
+
+  static func getMorningCompletedDate() -> String? {
+    if let cached = cachedMorningCompletedDate {
+      return cached
+    }
+    if let value = UserDefaults.standard.string(forKey: morningMissionCompletedDateKey) {
+      cachedMorningCompletedDate = value
+      return value
+    }
+    return nil
+  }
+
+  static func setMorningActiveAlarmId(_ value: String?) {
+    cachedMorningActiveAlarmId = value
+    if let val = value {
+      UserDefaults.standard.set(val, forKey: morningMissionActiveAlarmIdKey)
+    } else {
+      UserDefaults.standard.removeObject(forKey: morningMissionActiveAlarmIdKey)
+    }
+  }
+
+  static func getMorningActiveAlarmId() -> String? {
+    if let cached = cachedMorningActiveAlarmId {
+      return cached
+    }
+    if let value = UserDefaults.standard.string(forKey: morningMissionActiveAlarmIdKey) {
+      cachedMorningActiveAlarmId = value
+      return value
+    }
+    return nil
+  }
+
+  static func setEveningInProgress(_ value: Bool) {
+    cachedEveningInProgress = value
+    UserDefaults.standard.set(value, forKey: eveningMissionInProgressKey)
+  }
+
+  static func getEveningInProgress() -> Bool {
+    if let cached = cachedEveningInProgress {
+      return cached
+    }
+    let value = UserDefaults.standard.bool(forKey: eveningMissionInProgressKey)
+    if value || UIApplication.shared.isProtectedDataAvailable {
+      cachedEveningInProgress = value
+    }
+    return value
+  }
+
+  static func setEveningStartedDate(_ value: String?) {
+    cachedEveningStartedDate = value
+    if let val = value {
+      UserDefaults.standard.set(val, forKey: eveningMissionStartedDateKey)
+    } else {
+      UserDefaults.standard.removeObject(forKey: eveningMissionStartedDateKey)
+    }
+  }
+
+  static func getEveningStartedDate() -> String? {
+    if let cached = cachedEveningStartedDate {
+      return cached
+    }
+    if let value = UserDefaults.standard.string(forKey: eveningMissionStartedDateKey) {
+      cachedEveningStartedDate = value
+      return value
+    }
+    return nil
+  }
+
+  static func setEveningCompletedDate(_ value: String?) {
+    cachedEveningCompletedDate = value
+    if let val = value {
+      UserDefaults.standard.set(val, forKey: eveningMissionCompletedDateKey)
+    } else {
+      UserDefaults.standard.removeObject(forKey: eveningMissionCompletedDateKey)
+    }
+  }
+
+  static func getEveningCompletedDate() -> String? {
+    if let cached = cachedEveningCompletedDate {
+      return cached
+    }
+    if let value = UserDefaults.standard.string(forKey: eveningMissionCompletedDateKey) {
+      cachedEveningCompletedDate = value
+      return value
+    }
+    return nil
+  }
+
   static func runWithBackgroundTask(name: String, block: @escaping () async -> Void) {
     var bgTaskId: UIBackgroundTaskIdentifier = .invalid
     bgTaskId = UIApplication.shared.beginBackgroundTask(withName: name) {
@@ -459,7 +600,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         return
       }
       Task {
-        UserDefaults.standard.set(false, forKey: Self.morningMissionInProgressKey)
+        Self.setMorningInProgress(false)
         Self.clearMorningNextFireEpoch()
         Self.cancelMorningLadder()
         Self.cancelStopEcho(kind: "morning")
@@ -502,10 +643,10 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       // 미션 주인 알람 id를 보관 — 이후 추격 재무장이 이 id를 싣는다.
       if let missionAlarmId = (call.arguments as? [String: Any])?["alarmId"] as? String,
          !missionAlarmId.isEmpty {
-        UserDefaults.standard.set(missionAlarmId, forKey: Self.morningMissionActiveAlarmIdKey)
+        Self.setMorningActiveAlarmId(missionAlarmId)
       }
       // 미션 시작 날짜 도장 — 앱이 죽어도 '오늘의 미션'만 부활시키기 위함.
-      UserDefaults.standard.set(Self.todayKey(), forKey: Self.morningMissionStartedDateKey)
+      Self.setMorningStartedDate(Self.todayKey())
       guard #available(iOS 26.0, *) else {
         result(true)
         return
@@ -570,11 +711,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     case "resumeMorningRetryAfterMissionAbandoned":
       // 인텐트/pause를 안 거친 미션(승격·게이트 강제)도 오늘 시작 도장을
       // 받아야 날짜 스코프 추격 무장이 작동한다.
-      UserDefaults.standard.set(true, forKey: Self.morningMissionInProgressKey)
-      UserDefaults.standard.set(
-        Self.todayKey(),
-        forKey: Self.morningMissionStartedDateKey
-      )
+      Self.setMorningInProgress(true)
+      Self.setMorningStartedDate(Self.todayKey())
       // Mission screen went away without Amen. Schedule mission-exit watchdogs
       // so AlarmKit owns the re-ring outside the foreground mission.
       guard #available(iOS 26.0, *) else {
@@ -583,7 +721,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       }
       Self.runWithBackgroundTask(name: "resumeMorningRetry") {
         do {
-          UserDefaults.standard.set(true, forKey: Self.morningMissionInProgressKey)
+          Self.setMorningInProgress(true)
           try await Self.rearmMorningNormalRetriesForMissionAbandon(
             reason: "flutter_abandon"
           )
@@ -604,11 +742,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     case "resumeEveningRetryAfterMissionAbandoned":
       // Evening mission screen went away without Amen. Re-ring quickly.
       // 아침과 대칭: 진행 플래그를 세워 배경 전환 재무장·정리 가드가 작동.
-      UserDefaults.standard.set(true, forKey: Self.eveningMissionInProgressKey)
-      UserDefaults.standard.set(
-        Self.todayKey(),
-        forKey: Self.eveningMissionStartedDateKey
-      )
+      Self.setEveningInProgress(true)
+      Self.setEveningStartedDate(Self.todayKey())
       guard #available(iOS 26.0, *) else {
         result(true)
         return
@@ -691,7 +826,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         return
       }
       Task {
-        UserDefaults.standard.set(false, forKey: Self.eveningMissionInProgressKey)
+        Self.setEveningInProgress(false)
         Self.cancelEveningLadder()
         Self.cancelStopEcho(kind: "evening")
         await Self.clearPersistence(kind: "evening")
@@ -855,13 +990,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         // id는 남는다. 오늘 시작한 미션의 주인이 아직 미완료면 앱을 연
         // 것만으로 미션을 되살린다 — 아멘 또는 자정만이 출구(실측
         // 2026-07-10 10:42: 미션 중 강제종료 후 재진입 때 미션 실종).
-        if UserDefaults.standard.bool(forKey: Self.morningMissionInProgressKey),
-           UserDefaults.standard.string(forKey: Self.morningMissionStartedDateKey)
-             == Self.todayKey(),
-           UserDefaults.standard.string(forKey: Self.morningMissionCompletedDateKey)
-             != Self.todayKey() {
-          let owner =
-            UserDefaults.standard.string(forKey: Self.morningMissionActiveAlarmIdKey) ?? ""
+        if Self.isMorningMissionInProgress() {
+          let owner = Self.getMorningActiveAlarmId() ?? ""
           let ownerCompleted = !owner.isEmpty
             && UserDefaults.standard.string(
               forKey: Self.morningCompletedPerAlarmPrefix + owner
@@ -884,7 +1014,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       // 없으면 '진행 중 미션의 주인' 키만 믿고, 그마저 없으면 id 없이
       // 넘긴다(아멘의 방금-지나간-알람 추론이 처리).
       let firedAlarmId = UserDefaults.standard.string(forKey: "pendingMissionAlarmId")
-        ?? UserDefaults.standard.string(forKey: Self.morningMissionActiveAlarmIdKey)
+        ?? Self.getMorningActiveAlarmId()
       UserDefaults.standard.set(false, forKey: "pendingMission")
       UserDefaults.standard.removeObject(forKey: "pendingMissionKind")
       UserDefaults.standard.removeObject(forKey: "pendingMissionSource")
@@ -905,16 +1035,16 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       let f = DateFormatter()
       f.dateFormat = "yyyy-MM-dd"
       let stampDate =
-        UserDefaults.standard.string(forKey: Self.morningMissionStartedDateKey)
+        Self.getMorningStartedDate()
         ?? f.string(from: Date())
-      UserDefaults.standard.set(false, forKey: Self.morningMissionInProgressKey)
+      Self.setMorningInProgress(false)
       UserDefaults.standard.set(false, forKey: "pendingMission")
       UserDefaults.standard.removeObject(forKey: "pendingMissionKind")
       UserDefaults.standard.removeObject(forKey: "pendingMissionSource")
       UserDefaults.standard.removeObject(forKey: "pendingMissionAlarmId")
-      UserDefaults.standard.set(stampDate, forKey: Self.morningMissionCompletedDateKey)
-      UserDefaults.standard.removeObject(forKey: Self.morningMissionActiveAlarmIdKey)
-      UserDefaults.standard.removeObject(forKey: Self.morningMissionStartedDateKey)
+      Self.setMorningCompletedDate(stampDate)
+      Self.setMorningActiveAlarmId(nil)
+      Self.setMorningStartedDate(nil)
       // 사다리를 지우므로 배치 서명도 무효 — 다음 재예약이 생략되면 안 된다.
       UserDefaults.standard.removeObject(forKey: Self.morningBatchSignatureKey)
       // 멀티 알람: 완료를 알람별로도 기록한다(같은 날 다른 알람은 계속 유효).
@@ -955,14 +1085,14 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       // Amen: stamp today's date so stray evening retries are ignored.
       let f = DateFormatter()
       f.dateFormat = "yyyy-MM-dd"
-      UserDefaults.standard.set(false, forKey: Self.eveningMissionInProgressKey)
+      Self.setEveningInProgress(false)
       // 도장 날짜는 '울린 날'(시작일) 기준 — 아침과 동일 원칙.
       // (시작일은 도장에 쓴 '뒤에' 지워야 한다 — 순서 주의.)
       let eveningStamp =
-        UserDefaults.standard.string(forKey: Self.eveningMissionStartedDateKey)
+        Self.getEveningStartedDate()
         ?? f.string(from: Date())
-      UserDefaults.standard.removeObject(forKey: Self.eveningMissionStartedDateKey)
-      UserDefaults.standard.set(eveningStamp, forKey: Self.eveningMissionCompletedDateKey)
+      Self.setEveningStartedDate(nil)
+      Self.setEveningCompletedDate(eveningStamp)
       // 완료로 사다리 base가 내일로 바뀌므로 서명 무효화(재빌드 유도).
       UserDefaults.standard.removeObject(forKey: Self.eveningBatchSignatureKey)
       if #available(iOS 26.0, *) {
@@ -982,8 +1112,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     case "clearMorningMissionCompleted":
       // User explicitly re-saved/re-enabled the morning alarm. Allow same-day
       // test schedules to build a retry ladder again after a prior Amen.
-      UserDefaults.standard.set(false, forKey: Self.morningMissionInProgressKey)
-      UserDefaults.standard.removeObject(forKey: Self.morningMissionCompletedDateKey)
+      Self.setMorningInProgress(false)
+      Self.setMorningCompletedDate(nil)
       UserDefaults.standard.removeObject(forKey: Self.morningBatchSignatureKey)
       // alarmIds가 오면 그 알람들의 도장만 지운다 — 전부 지우면 늦은 알람을
       // 추가하는 저장이 이미 완료한 알람의 도장까지 지워 유령이 된다.
@@ -1004,8 +1134,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     case "clearEveningMissionCompleted":
       // User explicitly re-saved/re-enabled the evening alarm. Allow same-day
       // tests after a prior Amen.
-      UserDefaults.standard.set(false, forKey: Self.eveningMissionInProgressKey)
-      UserDefaults.standard.removeObject(forKey: Self.eveningMissionCompletedDateKey)
+      Self.setEveningInProgress(false)
+      Self.setEveningCompletedDate(nil)
       result(true)
 
     case "stopEveningAlert":
@@ -1023,7 +1153,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         try? AlarmManager.shared.cancel(id: Self.eveningSnoozeId)
         try? AlarmManager.shared.stop(id: Self.eveningMissionWatchdogId)
         try? AlarmManager.shared.cancel(id: Self.eveningMissionWatchdogId)
-        UserDefaults.standard.set(false, forKey: Self.eveningMissionInProgressKey)
+        Self.setEveningInProgress(false)
         Self.setPending(kind: "evening", pending: false)
         await MainActor.run { result(true) }
       }
@@ -1423,12 +1553,12 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     // 가드도 통과되어 삭제된 등록 자체도 1단계에서 정리된다.
     var ownerRemoved = 0
     if isMorningMissionInProgress(),
-       let owner = UserDefaults.standard.string(forKey: morningMissionActiveAlarmIdKey),
+       let owner = Self.getMorningActiveAlarmId(),
        !owner.isEmpty,
        !specs.contains(where: { $0.id == owner }) {
-      UserDefaults.standard.set(false, forKey: morningMissionInProgressKey)
-      UserDefaults.standard.removeObject(forKey: morningMissionActiveAlarmIdKey)
-      UserDefaults.standard.removeObject(forKey: morningMissionStartedDateKey)
+      Self.setMorningInProgress(false)
+      Self.setMorningActiveAlarmId(nil)
+      Self.setMorningStartedDate(nil)
       setPending(kind: "morning", pending: false)
       UserDefaults.standard.removeObject(forKey: "pendingMissionAlarmId")
       cancelMorningMissionExitLadder()
@@ -1680,7 +1810,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     // 진행한다. (예전엔 메인 알람의 duplicate-ID 실패가 사다리·epoch까지
     // 통째로 날려 '켜둔 알람이 무음으로 지나가는' 상태를 만들었다.)
     storeMorningNextFireEpoch(base)
-    NSLog("[ALARMKIT-DIAG] schedule h=\(hour) m=\(minute) completedStamp=\(UserDefaults.standard.string(forKey: morningMissionCompletedDateKey) ?? "nil") base=\(base)")
+    NSLog("[ALARMKIT-DIAG] schedule h=\(hour) m=\(minute) completedStamp=\(getMorningCompletedDate() ?? "nil") base=\(base)")
 
     // Main alarm at exact time, repeating on the user's selected weekdays.
     var mainScheduled = false
@@ -1889,7 +2019,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     // 그 알람이 오완료된다(실측 2026-07-10 9:40 아멘이 9:50에 도장).
     let firedAlarmId = intentAlarmId
       ?? (kind == "morning"
-        ? (UserDefaults.standard.string(forKey: Self.morningMissionActiveAlarmIdKey) ?? "")
+        ? (Self.getMorningActiveAlarmId() ?? "")
         : "")
     let configuration = AlarmManager.AlarmConfiguration.alarm(
       schedule: schedule,
@@ -2014,7 +2144,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     // 되살리면 맵이 다시 차므로 그때는 전체 pause가 정상 실행된다.
     if isMorningMissionInProgress(),
        loadStringMap(morningPerAlarmUuidMapKey).isEmpty {
-      UserDefaults.standard.set(true, forKey: morningMissionInProgressKey)
+      setMorningInProgress(true)
       UserDefaults.standard.removeObject(forKey: morningBatchSignatureKey)
       // 소리 마개: 이미 무장 해제됐더라도 현재 울리고 있을 워치독/에코를
       // stop한다 — 미션 화면에서 소리가 잔류하는 것을 완전 차단.
@@ -2025,7 +2155,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       NSLog("[ALARMKIT] mission pause: already disarmed — skipping repeat cancel storm (sounds stopped)")
       return
     }
-    UserDefaults.standard.set(true, forKey: morningMissionInProgressKey)
+    setMorningInProgress(true)
     // 사다리를 지우므로 배치 서명 무효 — 이후 재예약이 생략되면 안 된다.
     UserDefaults.standard.removeObject(forKey: morningBatchSignatureKey)
     // 미션 중 다른 알람의 독립 등록이 울리면 안 된다 — 전부 취소하고 맵을
@@ -2211,10 +2341,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     reason: String,
     firstDelaySeconds: Int = missionAbandonFirstRetryDelaySeconds
   ) async {
-    guard
-      UserDefaults.standard.string(forKey: eveningMissionCompletedDateKey)
-        != todayKey()
-    else { return }
+    guard getEveningCompletedDate() != todayKey() else { return }
 
     // 재등록 비동기 루프 도중에 강제종료될 경우를 대비해 일괄 취소를 건너뛰고,
     // 루프 안에서 개별적으로 덮어씌웁니다. 기존 예약을 안전망으로 남겨둡니다.
@@ -2268,8 +2395,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     if isEveningMissionInProgress(),
        let existing = try? AlarmManager.shared.alarms,
        !existing.contains(where: { $0.id == eveningId }) {
-      UserDefaults.standard.set(true, forKey: eveningMissionInProgressKey)
-      UserDefaults.standard.set(todayKey(), forKey: eveningMissionStartedDateKey)
+      setEveningInProgress(true)
+      setEveningStartedDate(todayKey())
       UserDefaults.standard.removeObject(forKey: eveningBatchSignatureKey)
       // 소리 마개: 이미 무장 해제됐더라도 현재 울리고 있을 워치독/에코를 stop.
       for wid in eveningMissionWatchdogIds {
@@ -2279,8 +2406,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       NSLog("[ALARMKIT] evening pause: already disarmed — skipping repeat cancels (sounds stopped)")
       return
     }
-    UserDefaults.standard.set(true, forKey: eveningMissionInProgressKey)
-    UserDefaults.standard.set(todayKey(), forKey: eveningMissionStartedDateKey)
+    setEveningInProgress(true)
+    setEveningStartedDate(todayKey())
     UserDefaults.standard.removeObject(forKey: eveningBatchSignatureKey)
     try? AlarmManager.shared.stop(id: eveningId)
     try? AlarmManager.shared.stop(id: eveningSnoozeId)
@@ -2348,7 +2475,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
 
   @available(iOS 26.0, *)
   private static func scheduleMorningMissionWatchdog(after seconds: TimeInterval) async throws {
-    if UserDefaults.standard.string(forKey: morningMissionCompletedDateKey) == todayKey() {
+    if getMorningCompletedDate() == todayKey() {
       return
     }
     cancelMorningMissionExitLadder()
@@ -2421,7 +2548,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     // 올바른 소리를 재선택한다 — intentAlarmId 없으면 scheduleOneMissionAlarm
     // 내부의 폴백이 '다음 알람'으로 덮인 scheduledMorningAlarmId를 쓰거나
     // 비어버려 기본 소리로 떨어진다.
-    let ownerAlarmId = UserDefaults.standard.string(forKey: morningMissionActiveAlarmIdKey)
+    let ownerAlarmId = getMorningActiveAlarmId()
     let startTime = Date()
     let generation = UserDefaults.standard.integer(
       forKey: morningMissionExitGenerationKey
@@ -2512,7 +2639,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
 
   @available(iOS 26.0, *)
   private static func scheduleEveningMissionWatchdog(after seconds: TimeInterval) async throws {
-    if UserDefaults.standard.string(forKey: eveningMissionCompletedDateKey) == todayKey() {
+    if getEveningCompletedDate() == todayKey() {
       return
     }
     try? AlarmManager.shared.stop(id: eveningMissionWatchdogId)
@@ -2545,7 +2672,14 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       of: today
     ) ?? now
 
-    let completedToday = UserDefaults.standard.string(forKey: completedDateKey) == todayKey()
+    let completedToday: Bool
+    if completedDateKey == morningMissionCompletedDateKey {
+      completedToday = getMorningCompletedDate() == todayKey()
+    } else if completedDateKey == eveningMissionCompletedDateKey {
+      completedToday = getEveningCompletedDate() == todayKey()
+    } else {
+      completedToday = UserDefaults.standard.string(forKey: completedDateKey) == todayKey()
+    }
     let lastRetry = todayBase.addingTimeInterval(TimeInterval(retryIntervalSeconds * retryCount))
     let selectedCalendarWeekdays = Set(
       normalizedDartWeekdays(dartWeekdays).map(calendarWeekday)
@@ -2598,7 +2732,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         == todayKey() {
         return
       }
-    } else if defaults.string(forKey: morningMissionCompletedDateKey) == todayKey() {
+    } else if getMorningCompletedDate() == todayKey() {
       return
     }
     defaults.set(true, forKey: "pendingMission")
@@ -2607,7 +2741,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     if !stampAlarmId.isEmpty {
       defaults.set(stampAlarmId, forKey: "pendingMissionAlarmId")
       // 승격된 미션의 주인 — 이후 추격 재무장이 이 id를 싣는다.
-      defaults.set(stampAlarmId, forKey: morningMissionActiveAlarmIdKey)
+      setMorningActiveAlarmId(stampAlarmId)
     }
     NSLog("[ALARMKIT] missed morning fire promoted to pending mission")
     // 게이트는 이미 지나갔을 수 있다 — 인텐트와 같은 Darwin 알림으로
@@ -2645,7 +2779,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       // 오늘 기준 유령 사다리를 부활시킨다(삭제한 알람이 7:03에 울리던 원인).
       // '다음 발화가 오늘'일 때만 지운다(정보 없으면 기존 동작 유지).
       if notCompleted && (nextFireIsToday ?? true) {
-        defaults.removeObject(forKey: morningMissionCompletedDateKey)
+        setMorningCompletedDate(nil)
         NSLog("[ALARMKIT-DIAG] storeScheduledId=\(alarmId) cleared global completed stamp")
       } else {
         NSLog("[ALARMKIT-DIAG] storeScheduledId=\(alarmId) stamp kept (completed=\(!notCompleted) today=\(String(describing: nextFireIsToday)))")
@@ -2663,20 +2797,18 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
 
   @available(iOS 26.0, *)
   static func isEveningMissionInProgress() -> Bool {
-    UserDefaults.standard.bool(forKey: eveningMissionInProgressKey)
-      && UserDefaults.standard.string(forKey: eveningMissionStartedDateKey)
-        == todayKey()
-      && UserDefaults.standard.string(forKey: eveningMissionCompletedDateKey)
-        != todayKey()
+    getEveningInProgress()
+      && getEveningStartedDate() == todayKey()
+      && getEveningCompletedDate() != todayKey()
   }
 
   private static func isMorningMissionInProgress() -> Bool {
     // 날짜 스코프 필수: 플래그만 보면 미션 중 프로세스 사망 후 플래그가
     // 자정을 넘겨 살아남아 동기화가 무기한 스킵된다(알람 전체 침묵 +
     // 시간 편집이 데몬에 영영 미적용). '오늘 시작한 미션'만 진행 중.
-    UserDefaults.standard.bool(forKey: morningMissionInProgressKey)
-      && UserDefaults.standard.string(forKey: morningMissionStartedDateKey) == todayKey()
-      && UserDefaults.standard.string(forKey: morningMissionCompletedDateKey) != todayKey()
+    getMorningInProgress()
+      && getMorningStartedDate() == todayKey()
+      && getMorningCompletedDate() != todayKey()
   }
 
   @available(iOS 26.0, *)
@@ -2694,8 +2826,8 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
   @available(iOS 26.0, *)
   private static func morningAlarmKitDiagnostics() -> [String: Any] {
     let defaults = UserDefaults.standard
-    let completedToday = defaults.string(forKey: morningMissionCompletedDateKey) == todayKey()
-    let inProgress = defaults.bool(forKey: morningMissionInProgressKey)
+    let completedToday = getMorningCompletedDate() == todayKey()
+    let inProgress = getMorningInProgress()
     let pendingMission = defaults.bool(forKey: "pendingMission")
     let nativePending = defaults.bool(forKey: morningPendingKey)
     let now = Date()
@@ -2973,7 +3105,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
   /// 소리로 울림) 주인 스펙에서 직접 찾는다. 없으면 저장 소리 폴백.
   private static func missionOwnerChaseSoundName() -> String {
     let owner =
-      UserDefaults.standard.string(forKey: morningMissionActiveAlarmIdKey) ?? ""
+      getMorningActiveAlarmId() ?? ""
     if !owner.isEmpty,
        let raw = UserDefaults.standard.array(forKey: morningSpecsKey)
          as? [[String: Any]],

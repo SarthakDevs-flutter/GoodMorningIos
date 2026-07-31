@@ -57,13 +57,13 @@ struct OpenMissionFromAlarmIntent: LiveActivityIntent {
       return .result()
     }
     if kind == "morning", alarmId.isEmpty,
-       UserDefaults.standard.string(forKey: "missionCompletedDate") == today {
+       NativeAlarmPlugin.getMorningCompletedDate() == today {
       return .result()
     }
     // 저녁도 동일: 오늘 축복을 마쳤으면 잔여 알람 정지가 미션을 다시 열지
     // 않는다(아멘 후 두 번째 미션이 뜨던 버그의 가드).
     if kind == "evening",
-       UserDefaults.standard.string(forKey: "eveningMissionCompletedDate") == today {
+       NativeAlarmPlugin.getEveningCompletedDate() == today {
       return .result()
     }
     if kind == "morning" {
@@ -75,15 +75,9 @@ struct OpenMissionFromAlarmIntent: LiveActivityIntent {
       // 울린 알람이 이 미션의 주인 — 이후 추격 재무장 슬롯들이 이 id를
       // 싣는다(다음 알람 id가 실리면 그 알람이 오완료되는 사고 방지).
       if !alarmId.isEmpty {
-        UserDefaults.standard.set(
-          alarmId,
-          forKey: NativeAlarmPlugin.morningMissionActiveAlarmIdKey
-        )
+        NativeAlarmPlugin.setMorningActiveAlarmId(alarmId)
       }
-      UserDefaults.standard.set(
-        OpenMissionFromAlarmIntent.todayKey(),
-        forKey: NativeAlarmPlugin.morningMissionStartedDateKey
-      )
+      NativeAlarmPlugin.setMorningStartedDate(OpenMissionFromAlarmIntent.todayKey())
       // 정지 메아리 먼저(Alare 기법): 아래의 무거운 pause·추격 무장이 도중에
       // 끊겨도 22초 뒤 한 발이 돌아와 이 perform 전체를 다시 시도한다.
       // '침묵 먼저, 생존 나중' 순서가 남기던 구멍의 마개.
