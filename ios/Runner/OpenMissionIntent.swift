@@ -27,16 +27,21 @@ struct OpenMissionFromAlarmIntent: LiveActivityIntent {
   @Parameter(title: "AlarmId")
   var alarmId: String
 
+  @Parameter(title: "WatchdogAlarmId")
+  var watchdogAlarmId: String
+
   init() {
     self.source = "alarmkit_stop"
     self.kind = "morning"
     self.alarmId = ""
+    self.watchdogAlarmId = ""
   }
 
-  init(source: String, kind: String = "morning", alarmId: String = "") {
+  init(source: String, kind: String = "morning", alarmId: String = "", watchdogAlarmId: String = "") {
     self.source = source
     self.kind = kind
     self.alarmId = alarmId
+    self.watchdogAlarmId = watchdogAlarmId
   }
 
   func perform() async throws -> some IntentResult {
@@ -66,44 +71,23 @@ struct OpenMissionFromAlarmIntent: LiveActivityIntent {
        NativeAlarmPlugin.getEveningCompletedDate() == today {
       return .result()
     }
+    // 즉시 정지: swiped/stopped된 알람의 소리를 최상단에서 정지.
+    if !alarmId.isEmpty, let uuid = UUID(uuidString: alarmId) {
+      try? AlarmManager.shared.stop(id: uuid)
+    }
+
     if kind == "morning" {
-      // 즉시 정지: swiped된 알람의 소리를 perform() 최상단에서 끈다.
-      // 나머지 무장·메아리 로직보다 먼저 실행되어 사용자에게 즉각 반응.
-      if !alarmId.isEmpty, let uuid = UUID(uuidString: alarmId) {
-        try? AlarmManager.shared.stop(id: uuid)
-      }
-      // 울린 알람이 이 미션의 주인 — 이후 추격 재무장 슬롯들이 이 id를
-      // 싣는다(다음 알람 id가 실리면 그 알람이 오완료되는 사고 방지).
       if !alarmId.isEmpty {
         NativeAlarmPlugin.setMorningActiveAlarmId(alarmId)
       }
       NativeAlarmPlugin.setMorningStartedDate(OpenMissionFromAlarmIntent.todayKey())
-      // 정지 메아리 먼저(Alare 기법): 아래의 무거운 pause·추격 무장이 도중에
-      // 끊겨도 22초 뒤 한 발이 돌아와 이 perform 전체를 다시 시도한다.
-      // '침묵 먼저, 생존 나중' 순서가 남기던 구멍의 마개.
-      await NativeAlarmPlugin.armStopEcho(kind: "morning")
-      try? await NativeAlarmPlugin.pauseMorningRetriesForMission()
-      // iOS 26은 알람 중 전원(측면) 버튼도 이 stop 인텐트를 실행한다(실측:
-      // 06:00:08 앱 기동 + 06:00:10 전면 취소 → 20분 침묵). '잡았지만 안
-      // 일어난' 경우를 위해 추격을 즉시 무장한다 — 미션 화면이 실제로 열리면
-      // 기존 경로(미션 시작 pause·sceneDidBecomeActive)가 22초 안에 취소하고,
-      // 안 열리면 알람이 계속 돌아온다(알라미 원칙).
-      try? await NativeAlarmPlugin.armMorningChaseAfterStop()
-      // 콜드스타트 재시도: 인텐트로 갓 깨어난 프로세스의 '첫' 예약(메아리)이
-      // 거부되는 실측(2026-07-15 15:36, 3회 전부) — 연결이 데워진 지금
-      // 한 번 더. 이미 성공해 있으면 같은 고정 id 교체라 무해.
-      await NativeAlarmPlugin.armStopEcho(kind: "morning")
-    } else if kind == "evening" {
-      // 즉시 정지: swiped된 알람의 소리를 먼저 끈다.
-      if !alarmId.isEmpty, let uuid = UUID(uuidString: alarmId) {
-        try? AlarmManager.shared.stop(id: uuid)
-      }
-      // 아침과 동일한 메아리-먼저 순서.
-      await NativeAlarmPlugin.armStopEcho(kind: "evening")
-      try? await NativeAlarmPlugin.pauseEveningRetriesForMission()
-      try? await NativeAlarmPlugin.armEveningChaseAfterStop()
-      await NativeAlarmPlugin.armStopEcho(kind: "evening")
     }
+
+    try? await NativeAlarmPlugin.handleAlarmStopped(
+      kind: kind,
+      alarmId: alarmId,
+      watchdogAlarmId: watchdogAlarmId
+    )
     // 대기표는 한 자리 — 이미 '아침' 대기표가 있는데 저녁 stop이 오면
     // 아침을 지키고(아침 우선), 저녁은 자체 잠금·추격이 되살린다.
     let existingKind = UserDefaults.standard.string(forKey: "pendingMissionKind")

@@ -524,20 +524,8 @@ Future<void> _openMorningMissionNow(String reason, {String? alarmId}) async {
       return;
     }
   }
-  if (!nativeOwnsMorningSound) {
-    if (AlarmSessionService.instance.isBlockingUiVisible &&
-        AlarmSessionService.instance.liveAlarmUiPhase ==
-            LiveAlarmUiPhase.ringing) {
-      await AlarmSoundService.instance.start(alarmId: resolvedAlarmId);
-    } else {
-      // Legacy iOS: start the in-app alarm loop so the alarm keeps ringing
-      // until the mission's auto-record takes over the microphone.
-      await AlarmPersistenceService.onAlarmFired(
-        AlarmNotificationService.morningAlarmPayload,
-        alarmId: resolvedAlarmId,
-      );
-    }
-  }
+  // Stop any active in-app alarm sound immediately before launching the mission
+  unawaited(AlarmSoundService.instance.stop());
 
   if (!AppLaunchState.bootComplete) {
     debugPrint('[MISSION] boot not complete; AppLaunchGate will force mission');
@@ -637,6 +625,7 @@ Future<void> _openEveningMissionNow(
 /// pushReplacement so popping the mission returns to home, not back to ringing.
 Future<void> _pushMissionFromRinging(String payload, {String? alarmId}) async {
   debugPrint('[MISSION] _pushMissionFromRinging called payload=$payload alarmId=$alarmId');
+  unawaited(AlarmSoundService.instance.stop());
   final isMorning = payload == AlarmNotificationService.morningAlarmPayload;
   final isEvening = payload == AlarmNotificationService.eveningAlarmPayload;
   if (!isMorning && !isEvening) return;

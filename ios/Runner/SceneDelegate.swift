@@ -10,6 +10,10 @@ class SceneDelegate: FlutterSceneDelegate {
   }
 
   override func sceneDidBecomeActive(_ scene: UIScene) {
+    if #available(iOS 26.0, *) {
+      NativeAlarmPlugin.stopAllActiveRingingSounds()
+    }
+
     // 잠금 화면 뒤에서 포그라운드로 실행돼도 becomeActive가 온다 — 그때
     // 추격을 취소하면 잠든 사용자에게 침묵이 된다(실측). 기기가 실제로
     // 잠금 해제됐고 화면이 켜져 있을 때만 '참여'로 인정한다.
@@ -43,9 +47,13 @@ class SceneDelegate: FlutterSceneDelegate {
         }
 
         if stillUnlocked && stillOn && stillActive {
-          NativeAlarmPlugin.cancelForegroundMissionExitWatchdogs(
-            reason: "sceneDidBecomeActive_sustained"
-          )
+          if #available(iOS 26.0, *) {
+            Task {
+              await NativeAlarmPlugin.cancelForegroundMissionExitWatchdogs(
+                reason: "sceneDidBecomeActive_sustained"
+              )
+            }
+          }
         } else {
           NSLog("[ALARMKIT] engagement not sustained — chase kept")
         }
