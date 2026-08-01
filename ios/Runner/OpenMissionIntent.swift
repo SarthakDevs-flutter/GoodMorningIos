@@ -1,5 +1,8 @@
 import AppIntents
 import Foundation
+#if canImport(AlarmKit)
+import AlarmKit
+#endif
 
 /// AlarmKit mission intent for the alarm's stop/slide action. It opens the app
 /// to the foreground and sets a pending-mission flag that Flutter consumes on
@@ -77,11 +80,17 @@ struct OpenMissionFromAlarmIntent: LiveActivityIntent {
     }
 
     if kind == "morning" {
+      NativeAlarmPlugin.setMorningInProgress(true)
       if !alarmId.isEmpty {
         NativeAlarmPlugin.setMorningActiveAlarmId(alarmId)
       }
       NativeAlarmPlugin.setMorningStartedDate(OpenMissionFromAlarmIntent.todayKey())
+    } else if kind == "evening" {
+      NativeAlarmPlugin.setEveningInProgress(true)
+      NativeAlarmPlugin.setEveningStartedDate(OpenMissionFromAlarmIntent.todayKey())
     }
+
+    await NativeAlarmPlugin.armStopEcho(kind: kind)
 
     try? await NativeAlarmPlugin.handleAlarmStopped(
       kind: kind,

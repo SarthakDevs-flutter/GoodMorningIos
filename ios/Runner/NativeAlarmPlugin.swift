@@ -120,6 +120,32 @@ class AlarmManager {
 }
 #endif
 
+/// Serializes every mutation of the fixed watchdog-ladder UUIDs, per kind
+/// (morning/evening). Two independent triggers fire on the same event (a
+/// side/power-button press runs the stop intent AND backgrounds the scene;
+/// a force-quit disconnects the scene) and both used to call straight into
+/// AlarmManager to cancel/reschedule the SAME 20 fixed ids concurrently,
+/// racing on a stale `AlarmManager.shared.alarms` snapshot. The previous
+/// guard (`morningMissionExitRearmInFlight`) only covered one of the two
+/// call sites, so repeated presses/force-quits could leave the ladder with
+/// zero live slots — and once that happens nothing ever fires again, so the
+/// app goes permanently silent. Chaining a `Task` per kind here guarantees
+/// every rebuild runs to completion, one at a time, in order, no matter how
+/// many triggers land concurrently.
+private actor LadderSerialQueue {
+  private var tails: [String: Task<Void, Never>] = [:]
+
+  func run(_ kind: String, _ operation: @escaping () async -> Void) async {
+    let previous = tails[kind]
+    let task = Task {
+      _ = await previous?.value
+      await operation()
+    }
+    tails[kind] = task
+    await task.value
+  }
+}
+
 /// Bridges Flutter alarm scheduling to iOS AlarmKit (26+) for lock-screen alarms.
 final class NativeAlarmPlugin: NSObject, FlutterPlugin {
   private static let morningId = UUID(uuidString: "A1000001-0000-4000-8000-000000000001")!
@@ -220,11 +246,12 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
   // cancelled so they cannot overlap the 15s in-app inactivity alarm.
   private static let missionAbandonFirstRetryDelaySeconds = 22
   private static let missionAbandonRetryCount = 20
-  private static let watchdogCount = 6
+  private static let watchdogCount = 20
   // 추격 간격 30초(사용자 결정: 더 촘촘하게) = 22초 + 19×30초 ≈ 10분 볼리.
   // 소진 후 다음 깨어남이 새 20발을 무장하고, 2분 사다리가 20분까지 잇는다.
   private static let missionAbandonIntervalSeconds = 30
   @MainActor private static var morningMissionExitRearmInFlight = false
+  private static let ladderQueue = LadderSerialQueue()
 
   // In-memory cache variables to survive locked UserDefaults encryption on iOS 18+
   private static var cachedMorningInProgress: Bool?
@@ -1080,6 +1107,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         Self.purgeStaleRetrySlots(["A1000040", "A1000050"])
         Self.cancelMorningMissionExitLadder()
         Self.cancelStopEcho(kind: "morning")
+        Self.cancelLocalNotificationBackstops(kind: "morning")
       }
       result(true)
 
@@ -1100,6 +1128,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       if #available(iOS 26.0, *) {
         Self.cancelEveningChase()
         Self.cancelStopEcho(kind: "evening")
+        Self.cancelLocalNotificationBackstops(kind: "evening")
       }
       // 미션 도중 잔여 알람이 남긴 저녁 대기표를 아멘이 반드시 청소한다 —
       // 안 지우면 아멘 직후 미션이 한 번 더 뜬다(아침과 동일한 정리).
@@ -1199,31 +1228,9 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         result(true)
         return
       }
-      // 아침 알람 관련
-      try? AlarmManager.shared.stop(id: Self.morningId)
-      try? AlarmManager.shared.stop(id: Self.morningSnoozeId)
-      for rid in Self.morningRetryIds {
-        try? AlarmManager.shared.stop(id: rid)
-      }
-      for wid in Self.morningMissionWatchdogIds {
-        try? AlarmManager.shared.stop(id: wid)
-      }
-      try? AlarmManager.shared.stop(id: Self.morningMissionWatchdogId)
-      try? AlarmManager.shared.stop(id: Self.morningStopEchoId)
-      // 저녁 알람 관련
-      try? AlarmManager.shared.stop(id: Self.eveningId)
-      try? AlarmManager.shared.stop(id: Self.eveningSnoozeId)
-      for rid in Self.eveningRetryIds {
-        try? AlarmManager.shared.stop(id: rid)
-      }
-      for wid in Self.eveningMissionWatchdogIds {
-        try? AlarmManager.shared.stop(id: wid)
-      }
-      try? AlarmManager.shared.stop(id: Self.eveningMissionWatchdogId)
-      try? AlarmManager.shared.stop(id: Self.eveningStopEchoId)
+      Self.stopAllActiveRingingSounds()
       // 알람별 등록(per-alarm) — 정지만, 취소는 안 한다.
       Self.stopAllPerAlarmRegistrations(cancelToo: false)
-      NSLog("[ALARMKIT] stopAllActiveSounds: all ringing alarms silenced")
       result(true)
 
     default:
@@ -2254,62 +2261,72 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
   /// 연장이 끊겨 남은 부대가 저절로 복귀한다. 전멸+이탈-순간-재무장 설계는
   /// 전원버튼 오판(누르는 순간 Face ID 통과) 한 번에 부대가 사라진 뒤 재무장
   /// Task가 동면에 져서 영원 침묵이 됐다(실측: 3연타 후 큐 텅 빔).
+  /// This also mutates the fixed watchdog UUIDs (on a third trigger —
+  /// foreground engagement — distinct from the stop-intent and
+  /// background/disconnect triggers above), so it shares the same per-kind
+  /// lock rather than racing them.
   @available(iOS 26.0, *)
   static func suppressChaseWindow(kind: String, seconds: TimeInterval) async {
-    let ids = kind == "evening" ? eveningMissionWatchdogIds : morningMissionWatchdogIds
-    let legacyId = kind == "evening" ? eveningMissionWatchdogId : morningMissionWatchdogId
-    let echoId = kind == "evening" ? eveningStopEchoId : morningStopEchoId
-    let cutoff = Date().addingTimeInterval(seconds)
-    guard let alarms = try? AlarmManager.shared.alarms else { return }
-    
-    let futureWatchdogs = alarms.filter { ids.contains($0.id) && (fixedFireDate($0) ?? Date.distantPast) > cutoff }
-    let nearWatchdogs = alarms.filter { ids.contains($0.id) && (fixedFireDate($0) ?? Date.distantPast) <= cutoff }
-    
-    var suppressed = 0
-    for a in nearWatchdogs {
-      try? AlarmManager.shared.stop(id: a.id)
-      try? AlarmManager.shared.cancel(id: a.id)
-      suppressed += 1
-    }
-    try? AlarmManager.shared.stop(id: legacyId)
-    try? AlarmManager.shared.cancel(id: legacyId)
-    try? AlarmManager.shared.stop(id: echoId)
-    try? AlarmManager.shared.cancel(id: echoId)
-    
-    NSLog("[ALARMKIT] chase quiet window +\(Int(seconds))s (\(kind)): \(suppressed) near slots suppressed, tail kept (\(futureWatchdogs.count) active)")
-    
-    let activeFutureCount = futureWatchdogs.count
-    let needed = watchdogCount - activeFutureCount
-    
-    if needed > 0 {
-      let interval = TimeInterval(missionAbandonIntervalSeconds) // 30s
-      let soundName = kind == "morning"
-        ? missionOwnerChaseSoundName()
-        : validatedMorningAlarmKitSoundName(UserDefaults.standard.string(forKey: eveningAlarmKitSoundNameKey))
-      let ownerId = kind == "morning" ? getMorningActiveAlarmId() : nil
-      
-      let maxFireDate = futureWatchdogs.compactMap { fixedFireDate($0) }.max()
-      let startFireDate = maxFireDate ?? cutoff
-      
-      let scheduledIds = futureWatchdogs.map { $0.id }
-      let availableIds = ids.filter { !scheduledIds.contains($0) }
-      
-      NSLog("[ALARMKIT] suppressChaseWindow: rebuilding \(needed) watchdogs after \(startFireDate) (\(kind))")
-      for i in 0..<min(needed, availableIds.count) {
-        let fireDate = startFireDate.addingTimeInterval(interval * TimeInterval(i + 1))
-        let wid = availableIds[i]
-        do {
-          try await scheduleOneMissionAlarm(
-            id: wid,
-            schedule: .fixed(fireDate),
-            titleText: kind == "morning" ? "God Morning" : "Evening blessing",
-            kind: kind,
-            source: kind == "morning" ? "alarmkit_stop" : "alarmkit_evening_retry_stop",
-            soundName: soundName,
-            intentAlarmId: ownerId
-          )
-        } catch {
-          NSLog("[ALARMKIT] failed to reschedule suppressed watchdog \(wid): \(error.localizedDescription)")
+    await ladderQueue.run(kind) {
+      let ids = kind == "evening" ? eveningMissionWatchdogIds : morningMissionWatchdogIds
+      let legacyId = kind == "evening" ? eveningMissionWatchdogId : morningMissionWatchdogId
+      let echoId = kind == "evening" ? eveningStopEchoId : morningStopEchoId
+      let cutoff = Date().addingTimeInterval(seconds)
+      guard let alarms = try? AlarmManager.shared.alarms else { return }
+
+      let futureWatchdogs = alarms.filter { ids.contains($0.id) && (fixedFireDate($0) ?? Date.distantPast) > cutoff }
+      let nearWatchdogs = alarms.filter { ids.contains($0.id) && (fixedFireDate($0) ?? Date.distantPast) <= cutoff }
+
+      let activeFutureCount = futureWatchdogs.count
+      let needed = watchdogCount - activeFutureCount
+
+      if nearWatchdogs.isEmpty && needed <= 0 {
+        return
+      }
+
+      var suppressed = 0
+      for a in nearWatchdogs {
+        try? AlarmManager.shared.stop(id: a.id)
+        try? AlarmManager.shared.cancel(id: a.id)
+        suppressed += 1
+      }
+      try? AlarmManager.shared.stop(id: legacyId)
+      try? AlarmManager.shared.cancel(id: legacyId)
+      try? AlarmManager.shared.stop(id: echoId)
+      try? AlarmManager.shared.cancel(id: echoId)
+
+      NSLog("[ALARMKIT] chase quiet window +\(Int(seconds))s (\(kind)): \(suppressed) near slots suppressed, tail kept (\(futureWatchdogs.count) active)")
+
+      if needed > 0 {
+        let interval = TimeInterval(missionAbandonIntervalSeconds) // 30s
+        let soundName = kind == "morning"
+          ? missionOwnerChaseSoundName()
+          : validatedMorningAlarmKitSoundName(UserDefaults.standard.string(forKey: eveningAlarmKitSoundNameKey))
+        let ownerId = kind == "morning" ? getMorningActiveAlarmId() : nil
+
+        let maxFireDate = futureWatchdogs.compactMap { fixedFireDate($0) }.max()
+        let startFireDate = maxFireDate ?? cutoff
+
+        let scheduledIds = futureWatchdogs.map { $0.id }
+        let availableIds = ids.filter { !scheduledIds.contains($0) }
+
+        NSLog("[ALARMKIT] suppressChaseWindow: rebuilding \(needed) watchdogs after \(startFireDate) (\(kind))")
+        for i in 0..<min(needed, availableIds.count) {
+          let fireDate = startFireDate.addingTimeInterval(interval * TimeInterval(i + 1))
+          let wid = availableIds[i]
+          do {
+            try await scheduleOneMissionAlarm(
+              id: wid,
+              schedule: .fixed(fireDate),
+              titleText: kind == "morning" ? "God Morning" : "Evening blessing",
+              kind: kind,
+              source: kind == "morning" ? "alarmkit_stop" : "alarmkit_evening_retry_stop",
+              soundName: soundName,
+              intentAlarmId: ownerId
+            )
+          } catch {
+            NSLog("[ALARMKIT] failed to reschedule suppressed watchdog \(wid): \(error.localizedDescription)")
+          }
         }
       }
     }
@@ -2500,28 +2517,16 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
   @available(iOS 26.0, *)
   static func stopAllActiveRingingSounds() {
     guard let alarms = try? AlarmManager.shared.alarms else { return }
+    var stoppedCount = 0
     for a in alarms {
-      try? AlarmManager.shared.stop(id: a.id)
+      if a.state == .alerting {
+        try? AlarmManager.shared.stop(id: a.id)
+        stoppedCount += 1
+      }
     }
-    try? AlarmManager.shared.stop(id: morningId)
-    try? AlarmManager.shared.stop(id: eveningId)
-    try? AlarmManager.shared.stop(id: morningSnoozeId)
-    try? AlarmManager.shared.stop(id: eveningSnoozeId)
-    for rid in morningRetryIds {
-      try? AlarmManager.shared.stop(id: rid)
+    if stoppedCount > 0 {
+      NSLog("[ALARMKIT] stopAllActiveRingingSounds: stopped \(stoppedCount) alerting alarms immediately")
     }
-    for rid in eveningRetryIds {
-      try? AlarmManager.shared.stop(id: rid)
-    }
-    for wid in morningMissionWatchdogIds {
-      try? AlarmManager.shared.stop(id: wid)
-    }
-    for wid in eveningMissionWatchdogIds {
-      try? AlarmManager.shared.stop(id: wid)
-    }
-    try? AlarmManager.shared.stop(id: morningStopEchoId)
-    try? AlarmManager.shared.stop(id: eveningStopEchoId)
-    NSLog("[ALARMKIT] stopAllActiveRingingSounds: stopped all native alarm sounds immediately")
   }
 
   @available(iOS 26.0, *)
@@ -2580,13 +2585,44 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     await reRegisterPerAlarmsAfterAbandon()
   }
 
+  /// Public entry point — acquires the per-kind ladder lock before doing any
+  /// AlarmManager work. Every caller (the stop intent's replenish path, the
+  /// scene-background/disconnect rearm, and the evening watchdog scheduler)
+  /// funnels through here, so overlapping triggers queue instead of racing.
   @available(iOS 26.0, *)
   private static func scheduleMissionAbandonLadder(
     kind: String,
     firstDelayOverride: Int? = nil
   ) async throws {
-    guard kind == "morning" ? isMorningMissionInProgress() : isEveningMissionInProgress() else {
-      return
+    var thrown: Error?
+    await ladderQueue.run(kind) {
+      do {
+        try await rebuildMissionAbandonLadderLocked(kind: kind, firstDelayOverride: firstDelayOverride)
+      } catch {
+        thrown = error
+      }
+    }
+    if let thrown { throw thrown }
+  }
+
+  /// Actual ladder rebuild. Only ever call this from inside `ladderQueue.run`
+  /// for the matching `kind` (either via `scheduleMissionAbandonLadder` above,
+  /// or directly from `handleAlarmStopped`, which already holds the lock) —
+  /// calling it unlocked reintroduces the exact race this queue prevents.
+  @available(iOS 26.0, *)
+  private static func rebuildMissionAbandonLadderLocked(
+    kind: String,
+    firstDelayOverride: Int? = nil
+  ) async throws {
+    let today = todayKey()
+    if kind == "morning" {
+      if getMorningCompletedDate() == today { return }
+      setMorningInProgress(true)
+      setMorningStartedDate(today)
+    } else {
+      if getEveningCompletedDate() == today { return }
+      setEveningInProgress(true)
+      setEveningStartedDate(today)
     }
 
     let watchdogIds = kind == "morning" ? morningMissionWatchdogIds : eveningMissionWatchdogIds
@@ -2594,19 +2630,39 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     let firstDelay = TimeInterval(firstDelayOverride ?? missionAbandonFirstRetryDelaySeconds) // 22s
     let count = watchdogCount // 6
 
+    let alarms = (try? AlarmManager.shared.alarms) ?? []
+    let activeWatchdogs = alarms.filter { watchdogIds.contains($0.id) }
+    let futureWatchdogs = activeWatchdogs.filter { (fixedFireDate($0) ?? Date.distantPast) > Date() }
+
+    let nearCutoff = Date().addingTimeInterval(45)
+    let nearWatchdogs = futureWatchdogs.filter { (fixedFireDate($0) ?? Date.distantPast) <= nearCutoff }
+
+    if futureWatchdogs.count >= count && !nearWatchdogs.isEmpty {
+      NSLog("[ALARMKIT] scheduleMissionAbandonLadder: watchdog ladder already complete (\(futureWatchdogs.count)/\(count) active, near active) for \(kind) — skip rebuild")
+      return
+    }
+
     let soundName = kind == "morning"
       ? missionOwnerChaseSoundName()
       : validatedMorningAlarmKitSoundName(UserDefaults.standard.string(forKey: eveningAlarmKitSoundNameKey))
     let ownerId = kind == "morning" ? getMorningActiveAlarmId() : nil
     let startTime = Date()
 
-    NSLog("[ALARMKIT] scheduling initial watchdog ladder for \(kind)...")
+    NSLog("[ALARMKIT] rebuilding watchdog ladder for \(kind) from background/disconnect (\(futureWatchdogs.count) active, nearCount=\(nearWatchdogs.count))...")
     var scheduledCount = 0
     for i in 0..<count {
-      let fireDate = startTime.addingTimeInterval(firstDelay + interval * TimeInterval(i))
+      let wid = watchdogIds[i]
+      if futureWatchdogs.contains(where: { $0.id == wid }) {
+        if nearWatchdogs.isEmpty && scheduledCount == 0 {
+          // No near watchdog active: force reschedule this slot to near time (+22s)
+        } else {
+          continue
+        }
+      }
+      let fireDate = startTime.addingTimeInterval(firstDelay + interval * TimeInterval(scheduledCount))
       do {
         try await scheduleOneMissionAlarm(
-          id: watchdogIds[i],
+          id: wid,
           schedule: .fixed(fireDate),
           titleText: kind == "morning" ? "God Morning" : "Evening blessing",
           kind: kind,
@@ -2619,101 +2675,76 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         NSLog("[ALARMKIT] failed to schedule watchdog \(i + 1): \(error.localizedDescription)")
       }
     }
-    NSLog("[ALARMKIT] scheduled \(scheduledCount)/\(count) watchdogs for \(kind)")
+    NSLog("[ALARMKIT] rebuilt watchdog ladder (\(scheduledCount) new, \(futureWatchdogs.count) existing) for \(kind)")
+    scheduleLocalNotificationBackstop(kind: kind, soundName: soundName)
   }
 
   @available(iOS 26.0, *)
   static func handleAlarmStopped(kind: String, alarmId: String, watchdogAlarmId: String) async {
-    guard kind == "morning" ? isMorningMissionInProgress() : isEveningMissionInProgress() else {
-      NSLog("[ALARMKIT] handleAlarmStopped: mission is not in progress. Skip reschedule.")
-      return
+    let today = todayKey()
+    if kind == "morning" {
+      if getMorningCompletedDate() == today {
+        NSLog("[ALARMKIT] handleAlarmStopped: morning mission already completed today. Skip reschedule.")
+        return
+      }
+      setMorningInProgress(true)
+      setMorningStartedDate(today)
+    } else {
+      if getEveningCompletedDate() == today {
+        NSLog("[ALARMKIT] handleAlarmStopped: evening mission already completed today. Skip reschedule.")
+        return
+      }
+      setEveningInProgress(true)
+      setEveningStartedDate(today)
     }
 
-    let watchdogIds = kind == "morning" ? morningMissionWatchdogIds : eveningMissionWatchdogIds
-    let interval = TimeInterval(missionAbandonIntervalSeconds) // 30s
-    let firstDelay = TimeInterval(missionAbandonFirstRetryDelaySeconds) // 22s
-    let count = watchdogCount
+    // Rotating the fired watchdog and replenishing the rest both touch the
+    // same fixed UUIDs `rebuildMissionAbandonLadderLocked` mutates, so both
+    // run inside the SAME lock acquisition — never call the unlocked rebuild
+    // from outside `ladderQueue.run`, and never nest another `run` call here
+    // (scheduleMissionAbandonLadder would deadlock waiting on itself).
+    await ladderQueue.run(kind) {
+      let watchdogIds = kind == "morning" ? morningMissionWatchdogIds : eveningMissionWatchdogIds
+      let interval = TimeInterval(missionAbandonIntervalSeconds) // 30s
+      let firstDelay = TimeInterval(missionAbandonFirstRetryDelaySeconds) // 22s
 
-    if let watchdogUuid = UUID(uuidString: watchdogAlarmId),
-       let index = watchdogIds.firstIndex(of: watchdogUuid) {
-      let alarms = (try? AlarmManager.shared.alarms) ?? []
-      let otherWatchdogAlarms = alarms.filter { watchdogIds.contains($0.id) && $0.id != watchdogUuid }
-      
-      let otherFireDates = otherWatchdogAlarms.compactMap { fixedFireDate($0) }.filter { $0 > Date() }
-      let nextFireDate: Date
-      if let maxDate = otherFireDates.max() {
-        nextFireDate = maxDate.addingTimeInterval(interval)
-      } else {
-        nextFireDate = Date().addingTimeInterval(firstDelay)
-      }
-
-      do {
-        let soundName = kind == "morning"
-          ? missionOwnerChaseSoundName()
-          : validatedMorningAlarmKitSoundName(UserDefaults.standard.string(forKey: eveningAlarmKitSoundNameKey))
-        let ownerId = kind == "morning" ? getMorningActiveAlarmId() : nil
-        
-        try await scheduleOneMissionAlarm(
-          id: watchdogUuid,
-          schedule: .fixed(nextFireDate),
-          titleText: kind == "morning" ? "God Morning" : "Evening blessing",
-          kind: kind,
-          source: kind == "morning" ? "alarmkit_stop" : "alarmkit_evening_retry_stop",
-          soundName: soundName,
-          intentAlarmId: ownerId
-        )
-        NSLog("[ALARMKIT] rotated watchdog \(index + 1) to \(nextFireDate) (\(kind))")
-      } catch {
-        NSLog("[ALARMKIT] failed to rotate watchdog \(index + 1): \(error.localizedDescription)")
-      }
-    } else {
-      // It is not a watchdog alarm (e.g. main alarm). This is the initial stop or a recovery attempt!
-      if kind == "morning" {
-        setMorningInProgress(true)
-        setMorningStartedDate(todayKey())
-      } else {
-        setEveningInProgress(true)
-        setEveningStartedDate(todayKey())
-      }
-      do {
+      if let watchdogUuid = UUID(uuidString: watchdogAlarmId),
+         let index = watchdogIds.firstIndex(of: watchdogUuid) {
         let alarms = (try? AlarmManager.shared.alarms) ?? []
-        let activeWatchdogs = alarms.filter { watchdogIds.contains($0.id) }
-        let futureWatchdogs = activeWatchdogs.filter { (fixedFireDate($0) ?? Date.distantPast) > Date() }
-        
-        if futureWatchdogs.count < count {
+        let otherWatchdogAlarms = alarms.filter { watchdogIds.contains($0.id) && $0.id != watchdogUuid }
+
+        let otherFireDates = otherWatchdogAlarms.compactMap { fixedFireDate($0) }.filter { $0 > Date() }
+        let nextFireDate: Date
+        if let maxDate = otherFireDates.max() {
+          nextFireDate = maxDate.addingTimeInterval(interval)
+        } else {
+          nextFireDate = Date().addingTimeInterval(firstDelay)
+        }
+
+        do {
           let soundName = kind == "morning"
             ? missionOwnerChaseSoundName()
             : validatedMorningAlarmKitSoundName(UserDefaults.standard.string(forKey: eveningAlarmKitSoundNameKey))
           let ownerId = kind == "morning" ? getMorningActiveAlarmId() : nil
-          let startTime = Date()
-          
-          NSLog("[ALARMKIT] rebuilding watchdog ladder for \(kind)...")
-          var scheduledCount = 0
-          for i in 0..<count {
-            let wid = watchdogIds[i]
-            if futureWatchdogs.contains(where: { $0.id == wid }) {
-              continue
-            }
-            let fireDate = startTime.addingTimeInterval(firstDelay + interval * TimeInterval(scheduledCount))
-            do {
-              try await scheduleOneMissionAlarm(
-                id: wid,
-                schedule: .fixed(fireDate),
-                titleText: kind == "morning" ? "God Morning" : "Evening blessing",
-                kind: kind,
-                source: kind == "morning" ? "alarmkit_stop" : "alarmkit_evening_retry_stop",
-                soundName: soundName,
-                intentAlarmId: ownerId
-              )
-              scheduledCount += 1
-            } catch {
-              NSLog("[ALARMKIT] failed to schedule watchdog \(i + 1): \(error.localizedDescription)")
-            }
-          }
-          NSLog("[ALARMKIT] rebuilt watchdog ladder (\(scheduledCount) new, \(futureWatchdogs.count) existing) for \(kind)")
-        } else {
-          NSLog("[ALARMKIT] watchdog ladder already complete (\(futureWatchdogs.count) slots). Skip rebuild.")
+
+          try await scheduleOneMissionAlarm(
+            id: watchdogUuid,
+            schedule: .fixed(nextFireDate),
+            titleText: kind == "morning" ? "God Morning" : "Evening blessing",
+            kind: kind,
+            source: kind == "morning" ? "alarmkit_stop" : "alarmkit_evening_retry_stop",
+            soundName: soundName,
+            intentAlarmId: ownerId
+          )
+          NSLog("[ALARMKIT] rotated watchdog \(index + 1) to \(nextFireDate) (\(kind))")
+        } catch {
+          NSLog("[ALARMKIT] failed to rotate watchdog \(index + 1): \(error.localizedDescription)")
         }
+      }
+
+      // Always replenish missing watchdog slots and guarantee near watchdog is scheduled
+      do {
+        try await rebuildMissionAbandonLadderLocked(kind: kind)
       } catch {
         NSLog("[ALARMKIT] failed during watchdog handle/rebuild: \(error.localizedDescription)")
       }
@@ -3495,5 +3526,42 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     )
 
     _ = try await AlarmManager.shared.schedule(id: id, configuration: configuration)
+  }
+
+  static func scheduleLocalNotificationBackstop(kind: String, soundName: String) {
+    let prefix = kind == "morning" ? "grace_morning_backstop_" : "grace_evening_backstop_"
+    let identifiers = (1...30).map { "\(prefix)\($0)" }
+    UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: identifiers)
+
+    let title = kind == "morning" ? "God Morning" : "Evening blessing"
+    let body = kind == "morning"
+      ? "Scripture & Prayer mission in progress. Tap to open mission."
+      : "Evening blessing mission in progress. Tap to open mission."
+
+    for i in 1...30 {
+      let delay = TimeInterval(25 + (i - 1) * 30)
+      let content = UNMutableNotificationContent()
+      content.title = title
+      content.body = body
+      content.sound = UNNotificationSound(named: UNNotificationSoundName(soundName))
+      content.userInfo = [
+        "payload": kind == "morning" ? "morning_alarm" : "evening_blessing_alarm",
+        "presentBanner": true,
+        "presentSound": true,
+        "presentList": true,
+        "presentBadge": true
+      ]
+
+      let trigger = UNTimeIntervalNotificationTrigger(timeInterval: delay, repeats: false)
+      let request = UNNotificationRequest(identifier: "\(prefix)\(i)", content: content, trigger: trigger)
+      UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
+    }
+    NSLog("[LOCAL_NOTIF] scheduled 30 backstop notifications for \(kind) with sound=\(soundName)")
+  }
+
+  static func cancelLocalNotificationBackstops(kind: String) {
+    let prefix = kind == "morning" ? "grace_morning_backstop_" : "grace_evening_backstop_"
+    let identifiers = (1...30).map { "\(prefix)\($0)" }
+    UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: identifiers)
   }
 }

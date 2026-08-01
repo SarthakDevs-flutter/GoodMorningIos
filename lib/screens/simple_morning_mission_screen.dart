@@ -805,6 +805,14 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
     _missionActionStarted = true;
     _lastMissionQuietRefreshAt = DateTime.now();
     final future = () async {
+      // The system/AlarmKit alert sound is what's actually audible on entry
+      // via notification tap, lock screen, notification center, or app icon
+      // (unlike the AlarmKit stop-button path, where the OS already silenced
+      // it before the app opened). initState fires this same call
+      // unawaited for earliest dispatch, but nothing downstream previously
+      // confirmed it landed before recording started — awaiting it here is
+      // what actually guarantees no audible overlap.
+      await NativeAlarmService.stopAllActiveSounds();
       if (_isEveningMission) {
         // 초경량 취소 — 빈 깡통 90발 취소가 STT 시작을 늦추던 낭비 제거.
         unawaited(
@@ -907,6 +915,10 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
       );
       await NativeAlarmService.pauseEveningRetriesForMission();
       if (stopCurrentSound) {
+        // Silences the actual ringing AlarmKit/system alert, not just the
+        // Dart-side loop — without this, recording could start while the
+        // system alarm sound is still audibly playing.
+        await NativeAlarmService.stopAllActiveSounds();
         await AlarmSoundService.instance.stop();
       }
       return;
@@ -919,6 +931,7 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
         alarmId: _resolvedAlarmId,
       );
       if (stopCurrentSound) {
+        await NativeAlarmService.stopAllActiveSounds();
         await AlarmSoundService.instance.stop();
       }
       return;

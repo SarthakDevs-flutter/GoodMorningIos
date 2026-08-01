@@ -151,24 +151,88 @@ class AlarmSoundPreferences {
     };
   }
 
+  /// Verified running length (seconds) of every bundled alarm sound —
+  /// measured with `afinfo <file>.wav` ("estimated duration"). Re-measure and
+  /// update this whenever a bundled file changes or a new one is added. A
+  /// filename missing from this table is never assumed short — see
+  /// [safeNotificationSoundFileFor], which treats "unknown" as "unsafe".
+  static const Map<String, double> _bundledSoundDurationSeconds = {
+    'god_morning_1.wav': 14.04,
+    'god_morning_2.wav': 20.76,
+    'god_morning_3.wav': 16.28,
+    'god_morning_4.wav': 19.92,
+    'god_morning_5.wav': 18.04,
+    'god_morning_6.wav': 12.00,
+    'god_morning_7.wav': 14.16,
+    'god_morning_9.wav': 43.04,
+    'god_morning_10.wav': 29.76,
+  };
+
+  /// Verified-short fallback used whenever a candidate sound isn't safely
+  /// shorter than the target series' interval. NOTE: at 14.04s this itself
+  /// does not fit a series faster than ~15s — see the assert below, which
+  /// surfaces that instead of silently shipping an overlap.
+  static const _safeShortFallback = 'god_morning_1.wav';
+
   /// Filename in the iOS app bundle for lock-screen notification sound.
   /// Keep this on short bundled files. Large/long files can fail silently as
   /// lock-screen alarm sounds.
-  static Future<String> iosNotificationSoundFile() async {
-    return notificationSoundFileFor(await alarmKitSoundFile());
+  static Future<String> iosNotificationSoundFile({
+    double intervalSeconds = 30,
+  }) async {
+    return safeNotificationSoundFileFor(
+      await alarmKitSoundFile(),
+      intervalSeconds: intervalSeconds,
+    );
   }
 
-  /// Local notification sounds must be shorter than 30 seconds. Alarm 8's
-  /// full tone is intentionally kept for AlarmKit and in-app playback, while
-  /// notification retries use a shorter excerpt of that same tone.
-  static String notificationSoundFileFor(String fileName) {
-    if (fileName == 'god_morning_9.wav' || fileName == 'god_morning_10.wav') {
-      // 30초 초과 파일은 iOS 로컬 알림(백스톱/융단)에서 무음(진동만 발생) 처리되므로,
-      // 안전하고 검증된 15초짜리 god_morning_1.wav로 대체하여 항상 소리가 나도록 합니다.
-      return 'god_morning_1.wav';
-    }
-    return fileName;
+  /// Picks a sound file that is safe to use inside a *repeating* notification
+  /// series firing every [intervalSeconds]. A sound still playing when the
+  /// next notification in the same series fires gets silently skipped by iOS
+  /// (measured: a 29.8s file at a 30s interval caused every other shot to go
+  /// silent — felt like the alarm went quiet for a full minute). Any file not
+  /// verified in [_bundledSoundDurationSeconds] is treated as unsafe, not
+  /// assumed short, since a wrong assumption here reproduces that exact bug
+  /// silently.
+  ///
+  /// [marginSeconds] is deliberately small (not a generous safety cushion):
+  /// it's calibrated to the two empirically known data points in this
+  /// codebase — 14.04s content at a 15s interval (~1s gap) has shipped
+  /// without issue, while 29.8s content at a 30s interval (~0.2s gap) is the
+  /// bug that motivated this function. A larger margin would reject the
+  /// already-proven-safe case.
+  static String safeNotificationSoundFileFor(
+    String fileName, {
+    required double intervalSeconds,
+    double marginSeconds = 0.5,
+  }) {
+    final duration = _bundledSoundDurationSeconds[fileName];
+    final fits = duration != null && duration + marginSeconds <= intervalSeconds;
+    if (fits) return fileName;
+
+    final fallbackDuration = _bundledSoundDurationSeconds[_safeShortFallback]!;
+    assert(() {
+      if (fallbackDuration + marginSeconds > intervalSeconds) {
+        // ignore: avoid_print
+        print(
+          '[SOUND-SAFETY] no bundled sound (incl. fallback '
+          '$_safeShortFallback @ ${fallbackDuration}s) fits a '
+          '${intervalSeconds}s interval — this series WILL overlap/skip '
+          'sound. Widen the interval or add a shorter asset.',
+        );
+      }
+      return true;
+    }());
+    return _safeShortFallback;
   }
+
+  /// Back-compat alias for callers that have not been migrated to pass an
+  /// explicit interval yet. Assumes the loosest interval currently in use
+  /// (30s, the fireAt-anchored backstop) — do not use this for anything
+  /// fired faster than that; call [safeNotificationSoundFileFor] directly
+  /// with the real interval instead.
+  static String notificationSoundFileFor(String fileName) =>
+      safeNotificationSoundFileFor(fileName, intervalSeconds: 30);
 
   /// Bundled filename for AlarmKit. System sounds and legacy long hymn
   /// selections fall back to short, verified bundled files.

@@ -456,10 +456,14 @@ class AlarmNotificationService {
   // 미션 진입·아멘·재예약이 전부 cancelMorningAlarm()을 지나므로 정상
   // 흐름에서는 울리기 전에 조용히 사라진다.
   static const morningBackstopBaseId = 3001;
-  // 6발 × 60초 = 발화 후 약 6분간 촘촘히 커버(AlarmKit 사다리는 +4분부터).
-  static const morningBackstopCount = 6;
+  // 12발 × 30초 = 발화 후 약 6분간 촘촘히 커버(AlarmKit 사다리는 +4분부터).
+  // count는 interval을 60→30초로 좁힌 만큼 두 배로 늘려 총 커버리지(~6분)를
+  // 그대로 유지한다 — 안 늘리면 커버가 절반(~3분)으로 줄어 사다리 인계
+  // 전에 창이 빈다. 최장 발화음(god_morning_2.wav, 20.76s)도 30초 간격에
+  // 여유가 있어 겹침으로 인한 무음(스킵) 위험은 없다.
+  static const morningBackstopCount = 12;
   static const morningBackstopFirstDelaySeconds = 45;
-  static const morningBackstopIntervalSeconds = 60;
+  static const morningBackstopIntervalSeconds = 30;
 
   Future<void> scheduleMorningBackstop({
     required DateTime fireAt,
@@ -495,7 +499,10 @@ class AlarmNotificationService {
       );
       scheduled++;
     }
-    debugPrint('[BACKSTOP] $scheduled shots from $fireAt (+45s/60s apart)');
+    debugPrint(
+      '[BACKSTOP] $scheduled shots from $fireAt '
+      '(+${morningBackstopFirstDelaySeconds}s/${morningBackstopIntervalSeconds}s apart)',
+    );
   }
 
   Future<void> cancelMorningBackstop() async {
@@ -670,7 +677,10 @@ class AlarmNotificationService {
           payload: eveningAlarmPayload,
         ),
     ]);
-    debugPrint('[BACKSTOP] evening abandon series armed: 40x15s');
+    debugPrint(
+      '[BACKSTOP] evening abandon series armed: '
+      '${morningAbandonBackstopCount}x${morningAbandonBackstopIntervalSeconds}s',
+    );
   }
 
   Future<void> cancelEveningAbandonBackstop() async {
@@ -697,10 +707,15 @@ class AlarmNotificationService {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
     await cancelMorningAbandonBackstop();
     if (!await ensurePermissions()) return;
-    // 14초 파일 고정 — 15초 간격과 절대 겹치지 않아 매발 소리가 난다.
-    // 사용자 지정음이 있으면 해당 지정음의 알림용 짧은 소리를 사용한다.
+    // 사용자 지정음이 있으면 그 소리를 쓰되, 15초 간격에 안 겹치는지
+    // 실측 재생시간으로 검증한다 — 예전엔 30초 가정 헬퍼를 그대로 써서
+    // god_morning_2~5(16~21초) 지정 시 다음 발과 겹쳐 소리가 걸러지는
+    // 문제가 있었다. 안 맞으면 검증된 14초 god_morning_1.wav로 대체.
     final iosSound = (soundName != null && soundName.isNotEmpty)
-        ? AlarmSoundPreferences.notificationSoundFileFor(soundName)
+        ? AlarmSoundPreferences.safeNotificationSoundFileFor(
+            soundName,
+            intervalSeconds: morningAbandonBackstopIntervalSeconds.toDouble(),
+          )
         : _abandonShortSound;
     final details = NotificationDetails(
       iOS: DarwinNotificationDetails(
@@ -733,7 +748,10 @@ class AlarmNotificationService {
           payload: morningAlarmPayload,
         ),
     ]);
-    debugPrint('[BACKSTOP] abandon series armed: 20x30s');
+    debugPrint(
+      '[BACKSTOP] abandon series armed: '
+      '${morningAbandonBackstopCount}x${morningAbandonBackstopIntervalSeconds}s',
+    );
   }
 
   Future<void> cancelMorningAbandonBackstop() async {
@@ -742,9 +760,10 @@ class AlarmNotificationService {
     ]);
   }
 
-  // 저녁(자녀 축복)도 동일한 데몬 사망 대비 — 10분 커버에 맞춰 5발.
+  // 저녁(자녀 축복)도 동일한 데몬 사망 대비 — 아침과 동일 간격(30초)이라
+  // 같은 커버리지(~6분)를 유지하려면 발수도 아침과 함께 두 배로 늘린다.
   static const eveningBackstopBaseId = 3101;
-  static const eveningBackstopCount = 5;
+  static const eveningBackstopCount = 10;
 
   Future<void> scheduleEveningBackstop({required DateTime fireAt}) async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
