@@ -490,6 +490,24 @@ class NativeAlarmService {
     }
   }
 
+  /// 네이티브(Swift) 측 워치독-재구축 백스톱(grace_*_backstop_N, 30초 간격)을
+  /// 취소한다. Dart 쪽 세 계열(백스톱·이탈백스톱·융단) 중 하나라도 새로
+  /// 무장될 때 반드시 먼저 호출 — 두 언어에서 독립적으로 도는 시리즈가
+  /// 동시에 살아있으면 서로의 재생 구간에 겹쳐 울려 소리가 겹친다(실측
+  /// 리포트). Dart가 죽어있는 동안 네이티브가 이미 몇 발 예약해뒀어도,
+  /// 이 호출은 대기 중인(아직 발화 전) 요청만 지운다 — 이미 배달된 소리는
+  /// 되돌릴 수 없다(iOS에 그런 API가 없다).
+  static Future<void> cancelLocalNotificationBackstop(String kind) async {
+    if (!_ios) return;
+    try {
+      await _channel.invokeMethod<bool>('cancelLocalNotificationBackstop', {
+        'kind': kind,
+      });
+    } on PlatformException catch (e) {
+      debugPrint('cancelLocalNotificationBackstop failed: $e');
+    }
+  }
+
   /// User started the actual mission action (record/type). Stop current
   /// AlarmKit retry sounds and backup watchdogs so STT is quiet. If the app
   /// leaves before Amen, native lifecycle hooks re-arm the exit watchdog.

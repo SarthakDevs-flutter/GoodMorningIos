@@ -470,7 +470,15 @@ class AlarmNotificationService {
     String? soundName,
   }) async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
-    await cancelMorningBackstop();
+    // 세 계열(백스톱·이탈백스톱·융단) 중 하나만 살아있어야 서로 다른
+    // 간격의 소리가 겹치지 않는다 — 이 계열이 무장될 땐 나머지 둘(과
+    // 네이티브 워치독 백스톱)을 함께 지운다.
+    await Future.wait([
+      cancelMorningBackstop(),
+      cancelMorningAbandonBackstop(),
+      cancelMorningRingCarpet(),
+      NativeAlarmService.cancelLocalNotificationBackstop('morning'),
+    ]);
     if (!await ensurePermissions()) {
       debugPrint('[BACKSTOP] skipped: no notification permission');
       return;
@@ -527,7 +535,13 @@ class AlarmNotificationService {
     String? soundName,
   }) async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
-    await cancelMorningRingCarpet();
+    // 세 계열 중 하나만 살아있어야 한다 — scheduleMorningBackstop 참고.
+    await Future.wait([
+      cancelMorningRingCarpet(),
+      cancelMorningBackstop(),
+      cancelMorningAbandonBackstop(),
+      NativeAlarmService.cancelLocalNotificationBackstop('morning'),
+    ]);
     if (!await ensurePermissions()) return;
     // 알림 소리는 30초 한도 — 알람별 소리도 발췌본으로 매핑(백스톱과 동일).
     final iosSound =
@@ -590,7 +604,13 @@ class AlarmNotificationService {
 
   Future<void> scheduleEveningRingCarpet({required DateTime anchor}) async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
-    await cancelEveningRingCarpet();
+    // 세 계열 중 하나만 살아있어야 한다 — scheduleMorningBackstop 참고.
+    await Future.wait([
+      cancelEveningRingCarpet(),
+      cancelEveningBackstop(),
+      cancelEveningAbandonBackstop(),
+      NativeAlarmService.cancelLocalNotificationBackstop('evening'),
+    ]);
     if (!await ensurePermissions()) return;
     final iosSound = await AlarmSoundPreferences.iosNotificationSoundFile();
     // 아침 융단과 동일: 포그라운드 무표시(미션 중 배너 차단).
@@ -643,7 +663,13 @@ class AlarmNotificationService {
 
   Future<void> scheduleEveningAbandonBackstop() async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
-    await cancelEveningAbandonBackstop();
+    // 세 계열 중 하나만 살아있어야 한다 — scheduleMorningBackstop 참고.
+    await Future.wait([
+      cancelEveningAbandonBackstop(),
+      cancelEveningBackstop(),
+      cancelEveningRingCarpet(),
+      NativeAlarmService.cancelLocalNotificationBackstop('evening'),
+    ]);
     if (!await ensurePermissions()) return;
     const iosSound = _abandonShortSound;
     final details = NotificationDetails(
@@ -705,7 +731,13 @@ class AlarmNotificationService {
 
   Future<void> scheduleMorningAbandonBackstop({String? soundName}) async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
-    await cancelMorningAbandonBackstop();
+    // 세 계열 중 하나만 살아있어야 한다 — scheduleMorningBackstop 참고.
+    await Future.wait([
+      cancelMorningAbandonBackstop(),
+      cancelMorningBackstop(),
+      cancelMorningRingCarpet(),
+      NativeAlarmService.cancelLocalNotificationBackstop('morning'),
+    ]);
     if (!await ensurePermissions()) return;
     // 사용자 지정음이 있으면 그 소리를 쓰되, 15초 간격에 안 겹치는지
     // 실측 재생시간으로 검증한다 — 예전엔 30초 가정 헬퍼를 그대로 써서
@@ -767,7 +799,13 @@ class AlarmNotificationService {
 
   Future<void> scheduleEveningBackstop({required DateTime fireAt}) async {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
-    await cancelEveningBackstop();
+    // 세 계열 중 하나만 살아있어야 한다 — scheduleMorningBackstop 참고.
+    await Future.wait([
+      cancelEveningBackstop(),
+      cancelEveningAbandonBackstop(),
+      cancelEveningRingCarpet(),
+      NativeAlarmService.cancelLocalNotificationBackstop('evening'),
+    ]);
     if (!await ensurePermissions()) return;
     // 아침 백스톱과 동일: 포그라운드 무표시·무음(백그라운드 배달 무영향).
     final iosSound = await AlarmSoundPreferences.iosNotificationSoundFile();

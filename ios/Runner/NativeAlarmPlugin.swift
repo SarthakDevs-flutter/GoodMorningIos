@@ -1221,6 +1221,16 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         }
       }
 
+    case "cancelLocalNotificationBackstop":
+      // Dart 쪽 3계열(백스톱·이탈백스톱·융단) 중 하나가 새로 무장될 때
+      // 호출된다 — 네이티브 워치독-재구축 백스톱이 남아있으면 서로 다른
+      // 간격(30초 vs 10/15초)으로 동시에 울려 소리가 겹친다.
+      if let args = call.arguments as? [String: Any],
+         let kind = args["kind"] as? String {
+        Self.cancelLocalNotificationBackstops(kind: kind)
+      }
+      result(true)
+
     case "stopAllActiveSounds":
       // 미션 화면 진입 즉시 울리고 있는 모든 AlarmKit 알람음을 강제 정지한다.
       // cancel은 하지 않는다 — 추격 사다리는 살려두되 소리만 즉각 끈다.
@@ -3528,10 +3538,29 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     _ = try await AlarmManager.shared.schedule(id: id, configuration: configuration)
   }
 
+  // Dart 쪽 세 계열(백스톱·이탈백스톱·융단)의 알림 ID 범위 — 값은
+  // lib/services/alarm_notification_service.dart의 base/count 상수와
+  // 반드시 일치해야 한다. flutter_local_notifications는 iOS에서 정수 id를
+  // 그대로 문자열 식별자로 쓴다("\(id)").
+  private static func dartOwnedNotificationIdentifiers(kind: String) -> [String] {
+    let ranges: [(base: Int, count: Int)] = kind == "morning"
+      ? [(3001, 12), (3301, 40), (3401, 24)]   // backstop, abandonBackstop, ringCarpet
+      : [(3101, 10), (3501, 40), (3601, 24)]
+    return ranges.flatMap { base, count in (0..<count).map { "\(base + $0)" } }
+  }
+
   static func scheduleLocalNotificationBackstop(kind: String, soundName: String) {
     let prefix = kind == "morning" ? "grace_morning_backstop_" : "grace_evening_backstop_"
     let identifiers = (1...30).map { "\(prefix)\($0)" }
     UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: identifiers)
+    // Dart 쪽 세 계열이 대기 중이면 함께 지운다 — 이 함수는 배경/연결끊김
+    // 재구축 시점에 헤드리스로도 실행되므로(Dart 엔진이 죽어있을 수 있음)
+    // Flutter를 거치지 않고 같은 UNUserNotificationCenter 저장소를 직접
+    // 정리한다. 서로 다른 간격(30초 vs 10/15초)의 두 시리즈가 동시에
+    // 살아있으면 재생 구간이 겹쳐 소리가 겹친다(실측 리포트).
+    UNUserNotificationCenter.current().removePendingNotificationRequests(
+      withIdentifiers: dartOwnedNotificationIdentifiers(kind: kind)
+    )
 
     let title = kind == "morning" ? "God Morning" : "Evening blessing"
     let body = kind == "morning"
