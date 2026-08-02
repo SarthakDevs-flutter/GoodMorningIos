@@ -5,6 +5,7 @@ import 'package:speech_to_text/speech_to_text.dart' as stt;
 import '../../l10n/app_localizations.dart';
 import '../../services/alarm_notification_service.dart';
 import '../../services/alarm_schedule_helper.dart';
+import '../../services/native_alarm_service.dart';
 import '../../theme/app_theme.dart';
 
 class PermissionsOnboardingScreen extends StatefulWidget {
@@ -53,8 +54,18 @@ class _PermissionsOnboardingScreenState
 
     try {
       if (!kIsWeb) {
+        // Request each permission explicitly and in a deterministic order so
+        // the OS prompts appear one after another with clear intent, rather
+        // than as implicit side-effects of scheduling.
+        // 1) Notifications — alarm delivery and lock-screen backstops.
         await AlarmNotificationService.instance.ensurePermissions();
+        // 2) AlarmKit (iOS 26+) — the primary lock-screen alarm engine that
+        //    rings through silent mode and auto-presents over the lock screen.
+        //    No-op and safe on Android / older iOS (guarded, idempotent).
+        await NativeAlarmService.requestAuthorization();
+        // 3) Schedule with whichever engine is now authorized.
         await AlarmScheduleHelper.ensureScheduled();
+        // 4) Speech recognition — used by the reading mission.
         final speech = stt.SpeechToText();
         await speech.initialize(debugLogging: kDebugMode);
       }

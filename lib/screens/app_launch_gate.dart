@@ -73,13 +73,22 @@ class _AppLaunchGateState extends State<AppLaunchGate>
       return;
     }
 
-    final results = await Future.wait([
-      Future<void>.delayed(_splashDuration),
-      _prepareLaunchState(),
-    ]);
-    final onboardingDone = results[1] as bool;
+    // Load launch state first so we know whether an alarm is already ringing.
+    final splashTimer = Stopwatch()..start();
+    final onboardingDone = await _prepareLaunchState();
 
     if (!mounted) return;
+
+    // If an alarm mission is pending (alarm fired while the app was killed and
+    // the user just opened it), show it the instant the screen turns on — skip
+    // the remaining branded splash. The splash only runs for a normal launch.
+    if (onboardingDone && !_hasPendingAlarmMission) {
+      final remaining = _splashDuration - splashTimer.elapsed;
+      if (remaining > Duration.zero) {
+        await Future<void>.delayed(remaining);
+      }
+      if (!mounted) return;
+    }
 
     setState(
       () => _phase = onboardingDone
@@ -90,6 +99,14 @@ class _AppLaunchGateState extends State<AppLaunchGate>
       await _completeBoot();
     }
   }
+
+  /// True when boot detected a live alarm that must open its mission/ringing
+  /// screen immediately — used to bypass the branded splash delay.
+  bool get _hasPendingAlarmMission =>
+      _alarmLock != _AlarmLockKind.none ||
+      _alarmKitPendingMorningMission ||
+      _alarmKitPendingEveningMission ||
+      _androidPendingMorningRinging;
 
   @override
   void dispose() {
