@@ -126,8 +126,8 @@ class AlarmManager {
 /// a force-quit disconnects the scene) and both used to call straight into
 /// AlarmManager to cancel/reschedule the SAME 20 fixed ids concurrently,
 /// racing on a stale `AlarmManager.shared.alarms` snapshot. The previous
-/// guard (`morningMissionExitRearmInFlight`) only covered one of the two
-/// call sites, so repeated presses/force-quits could leave the ladder with
+/// guard (`morningMissionExitRearmInFlight`, since removed) only covered one
+/// of the two call sites, so repeated presses/force-quits could leave the ladder with
 /// zero live slots — and once that happens nothing ever fires again, so the
 /// app goes permanently silent. Chaining a `Task` per kind here guarantees
 /// every rebuild runs to completion, one at a time, in order, no matter how
@@ -250,7 +250,6 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
   // 추격 간격 30초(사용자 결정: 더 촘촘하게) = 22초 + 19×30초 ≈ 10분 볼리.
   // 소진 후 다음 깨어남이 새 20발을 무장하고, 2분 사다리가 20분까지 잇는다.
   private static let missionAbandonIntervalSeconds = 30
-  @MainActor private static var morningMissionExitRearmInFlight = false
   private static let ladderQueue = LadderSerialQueue()
 
   // In-memory cache variables to survive locked UserDefaults encryption on iOS 18+
@@ -2166,13 +2165,12 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
        loadStringMap(morningPerAlarmUuidMapKey).isEmpty {
       setMorningInProgress(true)
       UserDefaults.standard.removeObject(forKey: morningBatchSignatureKey)
-      // 소리 마개: 이미 무장 해제됐더라도 현재 울리고 있을 워치독/에코를
+      // 소리 마개: 이미 무장 해제됐더라도 '지금 울리고 있는' 워치독/에코만
       // stop한다 — 미션 화면에서 소리가 잔류하는 것을 완전 차단.
-      for wid in morningMissionWatchdogIds {
-        try? AlarmManager.shared.stop(id: wid)
-      }
-      try? AlarmManager.shared.stop(id: morningStopEchoId)
-      NSLog("[ALARMKIT] mission pause: already disarmed — skipping repeat cancel storm (sounds stopped)")
+      // 예약만 된(아직 안 울린) 발은 절대 건드리지 않는다: stop이 일회성
+      // 알람을 삭제해 사슬을 끊기 때문(stopIfAlerting 주석 참조).
+      stopIfAlerting(morningMissionWatchdogIds + [morningMissionWatchdogId, morningStopEchoId])
+      NSLog("[ALARMKIT] mission pause: already disarmed — skipping repeat cancel storm (alerting sounds stopped)")
       return
     }
     setMorningInProgress(true)
@@ -2190,15 +2188,12 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       try? AlarmManager.shared.cancel(id: rid)
     }
     purgeStaleRetrySlots(["A1000040"])
-    // 현재 울리고 있을 추격 워치독과 에코의 소리를 즉시 정지한다.
-    // 주의: cancel은 하지 않는다 — 추격 자체는 잠금 뒤에서도 계속 울려야
-    // 하며, 여기서는 '미션 진입 시 겹치는 소리'만 끊는다.
-    for wid in morningMissionWatchdogIds {
-      try? AlarmManager.shared.stop(id: wid)
-    }
-    try? AlarmManager.shared.stop(id: morningMissionWatchdogId)
-    try? AlarmManager.shared.stop(id: morningStopEchoId)
-    NSLog("[ALARMKIT] mission active: normal retries paused, active sounds stopped; chase stays until user visibly engages")
+    // 현재 '울리고 있는' 추격 워치독과 에코의 소리만 즉시 정지한다.
+    // 주의: cancel도, 예약만 된 발에 대한 stop도 하지 않는다 — 추격 자체는
+    // 잠금 뒤에서도 계속 울려야 하며, 여기서는 '미션 진입 시 겹치는 소리'만
+    // 끊는다. (stop은 일회성 알람을 삭제한다 — stopIfAlerting 주석 참조.)
+    stopIfAlerting(morningMissionWatchdogIds + [morningMissionWatchdogId, morningStopEchoId])
+    NSLog("[ALARMKIT] mission active: normal retries paused, alerting sounds stopped; chase stays until user visibly engages")
   }
 
   /// 정지 메아리(Alare 기법, github.com/Cizzuk/Alare 출하 실증): 정지 실행
@@ -2449,12 +2444,9 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       setEveningInProgress(true)
       setEveningStartedDate(todayKey())
       UserDefaults.standard.removeObject(forKey: eveningBatchSignatureKey)
-      // 소리 마개: 이미 무장 해제됐더라도 현재 울리고 있을 워치독/에코를 stop.
-      for wid in eveningMissionWatchdogIds {
-        try? AlarmManager.shared.stop(id: wid)
-      }
-      try? AlarmManager.shared.stop(id: eveningStopEchoId)
-      NSLog("[ALARMKIT] evening pause: already disarmed — skipping repeat cancels (sounds stopped)")
+      // 소리 마개: 이미 무장 해제됐더라도 '지금 울리는' 워치독/에코만 stop.
+      stopIfAlerting(eveningMissionWatchdogIds + [eveningMissionWatchdogId, eveningStopEchoId])
+      NSLog("[ALARMKIT] evening pause: already disarmed — skipping repeat cancels (alerting sounds stopped)")
       return
     }
     setEveningInProgress(true)
@@ -2467,14 +2459,11 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       try? AlarmManager.shared.stop(id: rid)
       try? AlarmManager.shared.cancel(id: rid)
     }
-    // 현재 울리고 있을 추격 워치독과 에코의 소리를 즉시 정지한다.
-    // cancel은 하지 않는다 — 소리만 끊고 추격 사다리는 잠금 뒤를 위해 보존.
-    for wid in eveningMissionWatchdogIds {
-      try? AlarmManager.shared.stop(id: wid)
-    }
-    try? AlarmManager.shared.stop(id: eveningMissionWatchdogId)
-    try? AlarmManager.shared.stop(id: eveningStopEchoId)
-    NSLog("[ALARMKIT] evening mission active: retries paused, active sounds stopped")
+    // 현재 '울리고 있는' 추격 워치독과 에코의 소리만 즉시 정지한다.
+    // 예약만 된 발에는 stop을 보내지 않는다 — 일회성 알람이 삭제되어 저녁
+    // 추격 사슬이 통째로 사라진다(아침과 동일한 뿌리).
+    stopIfAlerting(eveningMissionWatchdogIds + [eveningMissionWatchdogId, eveningStopEchoId])
+    NSLog("[ALARMKIT] evening mission active: retries paused, alerting sounds stopped")
   }
 
   static func armMorningMissionExitWatchdogIfNeeded(reason: String) {
@@ -2521,6 +2510,28 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
     // 저녁도 대칭: 화면이 실제로 활성일 때만 조용 창을 연다.
     if isEveningMissionInProgress() {
       await suppressChaseWindow(kind: "evening", seconds: 120)
+    }
+  }
+
+  /// '소리만 끄고 예약은 남긴다'의 유일한 안전 구현.
+  ///
+  /// ⚠️ AlarmKit 규정(Apple 문서, `AlarmManager.stop(id:)`):
+  ///   "If the alarm is a one-shot, meaning it doesn't have a repeating
+  ///    schedule, then the system deletes the alarm."
+  /// 즉 아직 울리지도 않은 `.fixed` 일회성 예약에 stop을 보내면 **데몬에서
+  /// 삭제된다**. 추격 워치독·메아리는 전부 `.fixed` 일회성이므로, id 목록
+  /// 전체에 맹목적으로 stop을 돌리던 옛 코드는 '음소거'가 아니라 '재시도
+  /// 사슬 전멸'이었다 — 미션 진입/앱 실행마다 20발이 통째로 사라져 두 번째
+  /// 재울림 뒤 소리가 끊기고 무음 배너(UNNotification 백스톱)만 남던 뿌리.
+  ///
+  /// 지금 실제로 울리고 있는(.alerting) 발만 골라 멈춘다. 그 발은 이미
+  /// 소비된 발이라 삭제돼도 남은 사슬 길이가 줄지 않는다.
+  @available(iOS 26.0, *)
+  private static func stopIfAlerting(_ ids: [UUID]) {
+    guard let alarms = try? AlarmManager.shared.alarms else { return }
+    let wanted = Set(ids)
+    for alarm in alarms where alarm.state == .alerting && wanted.contains(alarm.id) {
+      try? AlarmManager.shared.stop(id: alarm.id)
     }
   }
 
@@ -2579,13 +2590,15 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
   ) async throws {
     guard isMorningMissionInProgress() else { return }
 
-    if morningMissionExitRearmInFlight {
-      UserDefaults.standard.set(reason, forKey: morningRearmReasonKey)
-      NSLog("[ALARMKIT] morning abandon rearm already in flight: \(reason)")
-      return
-    }
-    morningMissionExitRearmInFlight = true
-    defer { morningMissionExitRearmInFlight = false }
+    // ⚠️ 여기서 '이미 진행 중이면 return'을 하면 안 된다(옛 코드의 결함).
+    // 이 재무장은 미션 화면/게이트의 pause 바로 뒤에 따라오는 복구 단계다.
+    // 앞선 재무장이 아직 돌고 있다는 이유로 이 호출을 버리면, pause가
+    // 만들어 놓은 공백을 아무도 메우지 않아 추격이 영구 침묵한다 — 사이드
+    // 버튼/강제종료를 두세 번 반복하면 재현되던 '재시도 사슬 사망'의 두
+    // 번째 뿌리. 동시성은 ladderQueue(kind별 직렬 큐)가 이미 보장하고,
+    // 중복 요청은 rebuild의 '사다리 완전함' 빠른 경로가 무비용 no-op으로
+    // 흡수하므로 그냥 줄을 서서 반드시 실행되게 한다.
+    UserDefaults.standard.set(reason, forKey: morningRearmReasonKey)
 
     try await scheduleMissionAbandonLadder(
       kind: "morning",
