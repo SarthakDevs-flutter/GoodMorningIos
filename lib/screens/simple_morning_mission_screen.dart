@@ -459,7 +459,13 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
       unawaited(NativeAlarmService.stopAllActiveSounds());
       unawaited(AlarmSoundService.instance.stop());
       unawaited(NativeAlarmService.clearDeliveredNotifications());
-      unawaited(NativeAlarmService.cancelMorningMissionExitWatchdogs());
+      // ⚠️ 여기서 cancelMorningMissionExitWatchdogs()를 무조건 부르면 안 된다.
+      // 그 호출은 '앞으로 120초 동안 울릴 추격을 걷고 꼬리로 밀기'다. 잠금 뒤
+      // (사이드 버튼 정지)로 열린 미션에서도 실행되어, 22초 뒤에 와야 할
+      // 재울림이 매번 2분 넘게 밀렸다 — 누를 때마다 누적돼 사용자에게는
+      // '재시도가 아예 안 온다'로 보인다. 소리 즉시 차단은 위의
+      // stopAllActiveSounds()가 이미 담당한다. 조용 창은 아래 postFrame에서
+      // '사용자가 실제로 화면을 보는 중(engaged)'일 때만 연다.
       unawaited(
         _isEveningMission
             ? AlarmNotificationService.instance.cancelEveningMainNotification()
