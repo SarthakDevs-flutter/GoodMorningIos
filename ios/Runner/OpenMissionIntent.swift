@@ -11,10 +11,22 @@ import AlarmKit
 /// Note: stop here does NOT complete/cancel the alarm in our app logic — only
 /// Amen does. This intent just routes the user into the mission.
 @available(iOS 26.0, *)
-struct OpenMissionFromAlarmIntent: LiveActivityIntent {
+struct OpenMissionFromAlarmIntent: LiveActivityIntent, ForegroundContinuableIntent {
   static var title: LocalizedStringResource = "Stop Alarm"
 #if canImport(AlarmKit)
-  static var supportedModes: IntentModes { .foreground(.immediate) }
+  // ⚠️ .foreground(.immediate)가 아니라 .foreground(.dynamic)를 쓴다.
+  //
+  // .immediate는 stop을 누르는 즉시 앱을 포그라운드로 끌어올리려 하는데,
+  // 기기가 잠겨 있고 앱이 종료된 상태에서는 포그라운드 전환이 불가능하므로
+  // 시스템이 perform() 본문을 잠금 해제까지 지연/종료해버린다. 그 결과
+  // 큰 소리 AlarmKit 재무장(armStopEcho + 추격 사다리 재건축)이 실행되지
+  // 못하고, 무음 스위치를 존중하는 UNNotification 백스톱만 남는다 —
+  // 이것이 "무음 모드에서 첫 알람은 울리는데 재시도는 무음"의 뿌리였다.
+  //
+  // .dynamic은 perform()을 먼저 '배경'에서 실행한다(잠금 중에도 동작).
+  // 재무장을 모두 마친 뒤에야 requestToContinueInForeground()로 포그라운드
+  // 전환을 요청하므로, 잠금 해제 전에도 큰 소리 사다리가 계속 살아 있다.
+  static var supportedModes: IntentModes { .foreground(.dynamic) }
 #else
   static var openAppWhenRun: Bool { true }
 #endif
@@ -119,6 +131,15 @@ struct OpenMissionFromAlarmIntent: LiveActivityIntent {
       nil,
       true
     )
+#if canImport(AlarmKit)
+    // 위의 큰 소리 재무장(armStopEcho + handleAlarmStopped)이 '배경'에서
+    // 모두 끝난 뒤에야 포그라운드 전환을 요청한다. 잠금 화면 뒤에서는 잠금
+    // 해제까지 여기서 대기하지만, 그 사이에도 재무장된 AlarmKit 사다리가
+    // 무음/진동 스위치를 뚫고 계속 울린다. 잠금 해제되면 앱이 떠서 Flutter가
+    // pendingMission 플래그를 소비해 미션 화면으로 라우팅한다(기존 경로).
+    // 포그라운드 전환이 실패해도 재무장은 이미 완료됐으므로 try?로 무시한다.
+    try? await requestToContinueInForeground()
+#endif
     return .result()
   }
 
