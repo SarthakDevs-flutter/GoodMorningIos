@@ -41,21 +41,11 @@ class PremiumAccessService {
   static Future<bool> isTrialActive() async => false;
 
   static Future<bool> isPremiumUnlocked() async {
-    if (betaAccessEnabled) return true;
-    if (await isDeveloperAccessUnlocked()) return true;
-
-    final activeSubscription =
-        await StoreSubscriptionService.hasActiveSubscription();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_premiumUnlockedKey, activeSubscription);
-    return activeSubscription;
+    return true; // 테스트를 위해 구독 플로우를 우회하여 항상 프리미엄 권한을 부여합니다.
   }
 
   static Future<bool> hasAccess() async {
-    if (launchFreeAccessEnabled) return true;
-    if (betaAccessEnabled) return true;
-    if (await isDeveloperAccessUnlocked()) return true;
-    return isPremiumUnlocked();
+    return true; // 테스트를 위해 항상 엑세스 권한을 부여합니다.
   }
 
   static Future<bool> refreshPremiumStatus() {

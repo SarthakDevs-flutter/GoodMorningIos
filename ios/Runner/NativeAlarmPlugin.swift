@@ -2319,22 +2319,33 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
           : validatedMorningAlarmKitSoundName(UserDefaults.standard.string(forKey: eveningAlarmKitSoundNameKey))
         let ownerId = kind == "morning" ? getMorningActiveAlarmId() : nil
 
-        let maxFireDate = futureWatchdogs.compactMap { fixedFireDate($0) }.max()
-        // 생존 슬롯이 있으면 그 뒤(max+interval)에 이어 붙인다. 없으면(신선
-        // 빌드 — 알림 탭으로 미션을 연 흔한 경로) 첫 큰 소리 슬롯을 창
-        // 가장자리(cutoff≈30초)에 정확히 둔다. startFireDate를 cutoff로 두면
-        // 아래 루프의 interval*(i+1) 때문에 첫 슬롯이 60초로 밀려 사용자가
-        // 고른 ~30초 목표를 못 맞춘다(무음 알림만 60초간 남는 결함) — 그래서
-        // cutoff-interval에서 시작해 첫 슬롯이 cutoff에 떨어지게 한다.
-        let startFireDate = maxFireDate ?? cutoff.addingTimeInterval(-interval)
-
         let scheduledIds = futureWatchdogs.map { $0.id }
         let availableIds = ids.filter { !scheduledIds.contains($0) }
 
-        NSLog("[ALARMKIT] suppressChaseWindow: rebuilding \(needed) watchdogs after \(startFireDate) (\(kind))")
-        for i in 0..<min(needed, availableIds.count) {
-          let fireDate = startFireDate.addingTimeInterval(interval * TimeInterval(i + 1))
-          let wid = availableIds[i]
+        // 강제종료 후 첫 큰 소리까지의 공백 = 가장 가까운 생존 슬롯까지의
+        // 거리다. 근접 구간[cutoff, cutoff+interval]에 살아있는 슬롯이 없으면
+        // 첫 새 슬롯을 정확히 창 가장자리(cutoff≈30초)에 '심는다'. 이 시드가
+        // 매 굴림마다 갱신되므로 공백이 항상 창 길이(≈30초)로 고정된다.
+        // 시드 없이 꼬리에만 이어 붙이면(예전) 근접 슬롯이 첫 굴림 이후
+        // cutoff+interval(~60초)로 밀려 실측 공백이 ~45–60초가 됐다(사용자가
+        // 고른 ~30초 목표 미달). 나머지 슬롯은 꼬리(max+interval, …)에 이어
+        // 붙여 ~10분 커버리지를 유지한다 — 중복 시각/커버리지 침식 없음.
+        let nearestFuture = futureWatchdogs.compactMap { fixedFireDate($0) }.min()
+        let seedNear = (nearestFuture ?? Date.distantFuture) > cutoff.addingTimeInterval(interval)
+        var tailAnchor = futureWatchdogs.compactMap { fixedFireDate($0) }.max() ?? cutoff
+        var placed = 0
+
+        NSLog("[ALARMKIT] suppressChaseWindow: rebuilding \(needed) watchdogs (seedNear=\(seedNear)) for \(kind)")
+        for wid in availableIds {
+          if placed >= needed { break }
+          let fireDate: Date
+          if placed == 0 && seedNear {
+            // 데드맨: 창 가장자리에 정확히 한 발.
+            fireDate = cutoff
+          } else {
+            tailAnchor = tailAnchor.addingTimeInterval(interval)
+            fireDate = tailAnchor
+          }
           do {
             try await scheduleOneMissionAlarm(
               id: wid,
@@ -2345,6 +2356,7 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
               soundName: soundName,
               intentAlarmId: ownerId
             )
+            placed += 1
           } catch {
             NSLog("[ALARMKIT] failed to reschedule suppressed watchdog \(wid): \(error.localizedDescription)")
           }
