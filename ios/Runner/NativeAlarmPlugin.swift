@@ -250,6 +250,15 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
   // 추격 간격 30초(사용자 결정: 더 촘촘하게) = 22초 + 19×30초 ≈ 10분 볼리.
   // 소진 후 다음 깨어남이 새 20발을 무장하고, 2분 사다리가 20분까지 잇는다.
   private static let missionAbandonIntervalSeconds = 30
+  // 미션이 포그라운드로 '참여 중'일 때 큰 소리 사다리를 얼마나 앞으로
+  // 밀어둘지(=강제종료 후 첫 큰 소리까지의 최대 공백). 이 값은
+  // 시나리오상 '데드맨 스위치'의 사거리다: 참여 중에는 미션 화면이
+  // 이보다 짧은 주기로 창을 굴려(굴림 주기 < 이 값) 첫 슬롯이 절대
+  // 울리지 않게 밀지만, 강제종료로 굴림이 멈추면 이 시간 안에 큰 소리가
+  // 되돌아온다. 120초는 강제종료 후 최대 2분간 무음 알림만 남아
+  // "소리가 안 난다"는 실측(2026-08-03)의 뿌리였다 — 30초로 좁힌다.
+  // 굴림 주기(_chaseQuietRollTimer, Dart)는 반드시 이보다 짧아야 한다.
+  private static let missionEngagedQuietWindowSeconds: TimeInterval = 30
   @MainActor private static var morningMissionExitRearmInFlight = false
   private static let ladderQueue = LadderSerialQueue()
 
@@ -2315,7 +2324,13 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         let ownerId = kind == "morning" ? getMorningActiveAlarmId() : nil
 
         let maxFireDate = futureWatchdogs.compactMap { fixedFireDate($0) }.max()
-        let startFireDate = maxFireDate ?? cutoff
+        // 생존 슬롯이 있으면 그 뒤(max+interval)에 이어 붙인다. 없으면(신선
+        // 빌드 — 알림 탭으로 미션을 연 흔한 경로) 첫 큰 소리 슬롯을 창
+        // 가장자리(cutoff≈30초)에 정확히 둔다. startFireDate를 cutoff로 두면
+        // 아래 루프의 interval*(i+1) 때문에 첫 슬롯이 60초로 밀려 사용자가
+        // 고른 ~30초 목표를 못 맞춘다(무음 알림만 60초간 남는 결함) — 그래서
+        // cutoff-interval에서 시작해 첫 슬롯이 cutoff에 떨어지게 한다.
+        let startFireDate = maxFireDate ?? cutoff.addingTimeInterval(-interval)
 
         let scheduledIds = futureWatchdogs.map { $0.id }
         let availableIds = ids.filter { !scheduledIds.contains($0) }
@@ -2513,12 +2528,17 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
   @available(iOS 26.0, *)
   static func cancelForegroundMissionExitWatchdogs(reason: String) async {
     if isMorningMissionInProgress() {
-      await suppressChaseWindow(kind: "morning", seconds: 120)
+      await suppressChaseWindow(kind: "morning", seconds: missionEngagedQuietWindowSeconds)
       // 방치 경로가 되살린 알람별 등록은 미션 복귀 시 다시 잠재운다.
       stopAllPerAlarmRegistrations(cancelToo: true)
       NSLog("[ALARMKIT] foreground mission active — chase quiet window opened: \(reason)")
     }
     // 저녁도 대칭: 화면이 실제로 활성일 때만 조용 창을 연다.
+    // 저녁 화면은 아침의 15초 주기 롤러(_chaseQuietRollTimer)와 달리 창
+    // 연장이 '활동 이벤트' 기반(최대 10초 throttle)이라, 사용자가 아무 조작
+    // 없이 화면만 켜둔 유휴 상태에선 창이 사거리 안으로 못 굴려질 수 있다 —
+    // 저녁 창을 30초로 좁히면 그 유휴 사용자에게 큰 소리 blip이 날 수 있으므로
+    // 저녁은 기존 120초 창을 유지한다(이번 수정 대상은 아침 강제종료 경로).
     if isEveningMissionInProgress() {
       await suppressChaseWindow(kind: "evening", seconds: 120)
     }

@@ -599,14 +599,21 @@ class _SimpleMorningMissionScreenState extends State<SimpleMorningMissionScreen>
       if (!mounted) return;
       setState(() => _now = DateTime.now());
     });
+    // 굴림 주기는 네이티브의 조용 창(missionEngagedQuietWindowSeconds=30초)보다
+    // 반드시 짧아야 한다 — 참여 중 큰 소리 데드맨 슬롯(창 가장자리=30초 뒤)이
+    // 매 굴림마다 다시 30초 뒤로 밀려 절대 울리지 않되, 강제종료로 굴림이
+    // 멈추면 30초 안에 큰 소리가 되돌아온다. 45초 창(120초)일 땐 강제종료 후
+    // 최대 2분간 무음 알림만 남던 실측(2026-08-03)의 뿌리 — 15초로 좁힌다.
+    // 굴림은 '실제로 화면을 보는 중'(resumed+isDeviceInteractive)일 때만
+    // 돌므로 mobiletimerd IPC churn은 능동 미션 구간에만 국한된다.
     _chaseQuietRollTimer =
-        Timer.periodic(const Duration(seconds: 45), (_) async {
+        Timer.periodic(const Duration(seconds: 15), (_) async {
       if (!mounted || _completed) return;
       if (WidgetsBinding.instance.lifecycleState !=
           AppLifecycleState.resumed) {
         return;
       }
-      // 잠금 뒤에서 대기하고 있는 상태(_lockedEntryRinging)이면 120초 창을 연장하지 않는다 (chase 유지)
+      // 잠금 뒤에서 대기하고 있는 상태(_lockedEntryRinging)이면 창을 연장하지 않는다 (chase 유지)
       if (_lockedEntryRinging) return;
       // 하드웨어 신호로 '실제로 보는 중'일 때만 창을 연장한다 — 잠금 뒤
       // 포그라운드(전원버튼 케이스)에서는 연장하지 않아 추격이 복귀한다.
