@@ -451,10 +451,15 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
       nil,
       .deliverImmediately
     )
-    // AlarmKit morning now owns its own retry ladder. The old alarmUpdates
-    // monitor created extra 90s snooze alarms after stop/slide, which mixed
-    // sounds with the 30s retry ladder. Keep it disabled unless a future
-    // evening AlarmKit path explicitly needs it.
+    // alarmUpdates 옵저버를 켠다. 예전엔 이 옵저버가 stop/slide 뒤 90s 스누즈를
+    // 만들어 30s 재시도 사다리와 소리가 섞여서 꺼두었지만, 그 스누즈 분기를
+    // 제거했다(startMonitoringIfNeeded 내부 주석 참조). 이제 이 옵저버의 역할은
+    // single-ringing 중복 제거뿐이다 — 여러 발이 동시에 .alerting이면(재시도
+    // 사다리 20발이 쌓일 때) 하나만 남기고 나머지를 즉시 멈춰 "같은 소리 여러
+    // 개 겹침"을 막는다. 앱 프로세스가 살아 있을 때(포그라운드/막 활성화)만
+    // 돌지만, 강제종료 상태의 잠금화면 스택은 becomeActive의
+    // stopAllActiveRingingSounds가 흡수한다.
+    instance.startMonitoringIfNeeded()
   }
 
   func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -3424,6 +3429,38 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
         for await alarms in AlarmManager.shared.alarmUpdates {
           guard !Task.isCancelled else { return }
 
+          // 단일 링잉 강제(overlap guard): AlarmKit 일회성 알람은 정지 전까지
+          // 계속 .alerting 상태로 울린다. 재시도 사다리는 30s 간격 20발이라
+          // 사용자가 방치하면 이전 발이 멈추지 않은 채 다음 발이 울려 "같은
+          // 소리 여러 개"가 겹친다. 한 번에 하나만 울리도록, 여러 발이 동시에
+          // .alerting이면 하나만 남기고 나머지를 멈춘다.
+          //   - 메인/스누즈(tracked)가 울고 있으면 그것을 유지하고 추격
+          //     (untracked) 발만 멈춘다. tracked를 멈추면 아래 leave-.alerting
+          //     스누즈 분기가 잘못 발화해 잉여 알람이 생기므로 절대 멈추지 않는다.
+          //   - tracked가 하나도 안 울면 방금 울리기 시작한(untracked) 발 하나만
+          //     남기고 나머지를 멈춘다. (이미 소비된 일회성이라 멈춰도 남은
+          //     사다리 길이는 줄지 않는다 — stopIfAlerting 주석 참조.)
+          let alertingIds = alarms.filter { $0.state == .alerting }.map { $0.id }
+          if alertingIds.count > 1 {
+            let hasTracked = alertingIds.contains { Self.isTrackedAlarm($0) }
+            let keeper = hasTracked
+              ? nil // keep every tracked alarm, drop only untracked below
+              : (alertingIds.first { previousStates[$0] != .alerting } ?? alertingIds.first)
+            var stopped = 0
+            for id in alertingIds {
+              if hasTracked {
+                if Self.isTrackedAlarm(id) { continue }
+              } else if id == keeper {
+                continue
+              }
+              try? AlarmManager.shared.stop(id: id)
+              stopped += 1
+            }
+            if stopped > 0 {
+              NSLog("[ALARMKIT] single-ringing: stopped \(stopped) overlapping alerting alarm(s)")
+            }
+          }
+
           for alarm in alarms {
             let id = alarm.id
             guard Self.isTrackedAlarm(id) else { continue }
@@ -3431,14 +3468,16 @@ final class NativeAlarmPlugin: NSObject, FlutterPlugin {
             let kind = Self.kind(for: id)
             let previous = previousStates[id]
 
+            // ⚠️ .alerting → notify 절반만 유지한다. 예전의
+            // `else if previous == .alerting → scheduleSnooze` 분기는 tracked
+            // 알람이 .alerting을 떠날 때마다 90s 스누즈를 심어 30s 재시도 사다리와
+            // 소리가 섞였고, 그래서 이 옵저버 전체가 비활성화돼 있었다. 스누즈
+            // 분기를 제거했으므로 옵저버를 다시 켜도 안전하다(이제 이 옵저버의
+            // 존재 이유는 위의 single-ringing 중복 제거다).
             if alarm.state == .alerting {
               Self.setPending(kind: kind, pending: true)
               await MainActor.run {
                 self?.channel?.invokeMethod("onNativeAlarmAlerting", arguments: kind)
-              }
-            } else if previous == .alerting, alarm.state != .alerting {
-              if Self.isPending(kind: kind), !Self.isPrayerActive(kind: kind) {
-                try? await Self.scheduleSnooze(kind: kind)
               }
             }
 

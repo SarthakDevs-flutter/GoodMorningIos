@@ -90,6 +90,10 @@ struct OpenMissionFromAlarmIntent: LiveActivityIntent, ForegroundContinuableInte
     if !alarmId.isEmpty, let uuid = UUID(uuidString: alarmId) {
       try? AlarmManager.shared.stop(id: uuid)
     }
+    // 겹쳐 울리던 나머지 발도 전부 멈춘다 — 슬라이드 정지 순간 모든 소리가
+    // 꺼지고 미션 화면만 뜨도록. (지금 울고 있는 .alerting 발만 멈추므로 미래
+    // 사다리는 그대로다. 아래 handleAlarmStopped가 방치 대비 사다리를 재무장한다.)
+    NativeAlarmPlugin.stopAllActiveRingingSounds()
 
     if kind == "morning" {
       NativeAlarmPlugin.setMorningInProgress(true)
@@ -102,6 +106,40 @@ struct OpenMissionFromAlarmIntent: LiveActivityIntent, ForegroundContinuableInte
       NativeAlarmPlugin.setEveningStartedDate(OpenMissionFromAlarmIntent.todayKey())
     }
 
+    // ⚠️ pendingMission을 '무거운 재무장 이전에' 먼저 쓴다.
+    // force-quit + 잠금 상태에서 iOS는 이 정지 인텐트의 perform()에 아주 짧은
+    // 배경 실행 시간만 준다. 예전 순서(armStopEcho·handleAlarmStopped 재무장을
+    // 먼저 돌리고 그 뒤에 pendingMission 기록)는, 재무장(최대 20슬롯 × 재시도·
+    // 대기 = 수 초)이 그 예산을 다 써버려 perform()이 플래그를 쓰기 전에 종료되면
+    // pendingMission이 끝내 기록되지 않았다 → 잠금 해제 후 앱을 열어도 미션으로
+    // 라우팅할 근거가 없어 "슬라이드 정지했는데 아무것도 안 열림"이 된다.
+    // 플래그는 UserDefaults 한 줄이라 즉시 영구 저장 — 먼저 남기면 재무장이
+    // 중간에 죽어도 다음 앱 실행에서 미션이 열린다. (큰 소리 재무장은 아래에서
+    // 그대로 돌고, 포그라운드 전환 요청은 재무장 완료 후 맨 끝에서 한다 — 무음
+    // 모드 수정의 '재무장 먼저, 포그라운드 나중' 순서 계약은 그대로 유지.)
+    //
+    // 대기표는 한 자리 — 이미 '아침' 대기표가 있으면 저녁 stop은 덮지 않는다
+    // (아침 우선, 저녁은 자체 잠금·추격이 되살린다).
+    let morningAlreadyPending = UserDefaults.standard.bool(forKey: "pendingMission")
+      && UserDefaults.standard.string(forKey: "pendingMissionKind") == "morning"
+    if !(morningAlreadyPending && kind == "evening") {
+      UserDefaults.standard.set(true, forKey: "pendingMission")
+      UserDefaults.standard.set(kind, forKey: "pendingMissionKind")
+      UserDefaults.standard.set(source, forKey: "pendingMissionSource")
+      if !alarmId.isEmpty {
+        UserDefaults.standard.set(alarmId, forKey: "pendingMissionAlarmId")
+      }
+      // 앱이 이미 포그라운드면 launch/resume 소비 경로가 돌지 않는다 — Darwin
+      // 알림으로 플러그인에 즉시 알려 미션이 바로 뜨게 한다.
+      CFNotificationCenterPostNotification(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        CFNotificationName("com.bagseonghwa.meansofgrace.pendingMission" as CFString),
+        nil,
+        nil,
+        true
+      )
+    }
+
     await NativeAlarmPlugin.armStopEcho(kind: kind)
 
     try? await NativeAlarmPlugin.handleAlarmStopped(
@@ -109,28 +147,12 @@ struct OpenMissionFromAlarmIntent: LiveActivityIntent, ForegroundContinuableInte
       alarmId: alarmId,
       watchdogAlarmId: watchdogAlarmId
     )
-    // 대기표는 한 자리 — 이미 '아침' 대기표가 있는데 저녁 stop이 오면
-    // 아침을 지키고(아침 우선), 저녁은 자체 잠금·추격이 되살린다.
-    let existingKind = UserDefaults.standard.string(forKey: "pendingMissionKind")
-    if UserDefaults.standard.bool(forKey: "pendingMission"),
-       existingKind == "morning", kind == "evening" {
+
+    // 아침 우선: 이미 아침 대기표가 있는데 저녁 stop이면 포그라운드 전환은
+    // 하지 않는다. 재무장(위)은 이미 돌았다.
+    if morningAlreadyPending, kind == "evening" {
       return .result()
     }
-    UserDefaults.standard.set(true, forKey: "pendingMission")
-    UserDefaults.standard.set(kind, forKey: "pendingMissionKind")
-    UserDefaults.standard.set(source, forKey: "pendingMissionSource")
-    if !alarmId.isEmpty {
-      UserDefaults.standard.set(alarmId, forKey: "pendingMissionAlarmId")
-    }
-    // 앱이 이미 포그라운드면 launch/resume 소비 경로가 돌지 않는다 — Darwin
-    // 알림으로 플러그인에 즉시 알려 미션이 바로 뜨게 한다.
-    CFNotificationCenterPostNotification(
-      CFNotificationCenterGetDarwinNotifyCenter(),
-      CFNotificationName("com.bagseonghwa.meansofgrace.pendingMission" as CFString),
-      nil,
-      nil,
-      true
-    )
 #if canImport(AlarmKit)
     // 위의 큰 소리 재무장(armStopEcho + handleAlarmStopped)이 '배경'에서
     // 모두 끝난 뒤에야 포그라운드 전환을 요청한다. 잠금 화면 뒤에서는 잠금
