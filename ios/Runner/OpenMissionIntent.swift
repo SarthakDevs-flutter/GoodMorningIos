@@ -11,22 +11,22 @@ import AlarmKit
 /// Note: stop here does NOT complete/cancel the alarm in our app logic — only
 /// Amen does. This intent just routes the user into the mission.
 @available(iOS 26.0, *)
-struct OpenMissionFromAlarmIntent: LiveActivityIntent, ForegroundContinuableIntent {
+struct OpenMissionFromAlarmIntent: LiveActivityIntent {
   static var title: LocalizedStringResource = "Stop Alarm"
 #if canImport(AlarmKit)
-  // ⚠️ .foreground(.immediate)가 아니라 .foreground(.dynamic)를 쓴다.
+  // ✅ .foreground(.immediate) — 슬라이드 정지 시 시스템이 앱을 실제로 연다.
   //
-  // .immediate는 stop을 누르는 즉시 앱을 포그라운드로 끌어올리려 하는데,
-  // 기기가 잠겨 있고 앱이 종료된 상태에서는 포그라운드 전환이 불가능하므로
-  // 시스템이 perform() 본문을 잠금 해제까지 지연/종료해버린다. 그 결과
-  // 큰 소리 AlarmKit 재무장(armStopEcho + 추격 사다리 재건축)이 실행되지
-  // 못하고, 무음 스위치를 존중하는 UNNotification 백스톱만 남는다 —
-  // 이것이 "무음 모드에서 첫 알람은 울리는데 재시도는 무음"의 뿌리였다.
+  // 실측(2026-08-05, Chirag): 예전의 .foreground(.dynamic) +
+  // ForegroundContinuableIntent.requestToContinueInForeground()는 잠금 해제
+  // (Face ID/패스코드) 후에도 앱을 열지 못하고 홈 화면만 떴다. AlarmKit 정지
+  // 버튼에서 앱을 여는 Apple 공식 방식은 .foreground(.immediate)이며, 이는
+  // (deprecated된) openAppWhenRun = true와 동일하게 동작한다. 정지 버튼을 누른
+  // 것 자체가 사용자 상호작용이므로 잠금 화면 뒤에서도 인증 직후 앱이 뜬다.
   //
-  // .dynamic은 perform()을 먼저 '배경'에서 실행한다(잠금 중에도 동작).
-  // 재무장을 모두 마친 뒤에야 requestToContinueInForeground()로 포그라운드
-  // 전환을 요청하므로, 잠금 해제 전에도 큰 소리 사다리가 계속 살아 있다.
-  static var supportedModes: IntentModes { .foreground(.dynamic) }
+  // 무음 모드 관련: 예전 .dynamic 선택 이유였던 "큰 소리 재무장을 배경에서
+  // 먼저 돌린다"는, 이제 아래 perform()에서 재무장을 Task.detached로 떼어내어
+  // 대체한다 — .immediate가 열어준 앱 프로세스 안에서 재무장이 계속 돈다.
+  static var supportedModes: IntentModes { .foreground(.immediate) }
 #else
   static var openAppWhenRun: Bool { true }
 #endif
@@ -140,28 +140,32 @@ struct OpenMissionFromAlarmIntent: LiveActivityIntent, ForegroundContinuableInte
       )
     }
 
-    await NativeAlarmPlugin.armStopEcho(kind: kind)
-
-    try? await NativeAlarmPlugin.handleAlarmStopped(
-      kind: kind,
-      alarmId: alarmId,
-      watchdogAlarmId: watchdogAlarmId
-    )
-
-    // 아침 우선: 이미 아침 대기표가 있는데 저녁 stop이면 포그라운드 전환은
-    // 하지 않는다. 재무장(위)은 이미 돌았다.
-    if morningAlreadyPending, kind == "evening" {
-      return .result()
+    // ⚠️ 큰 소리 재무장(armStopEcho + handleAlarmStopped)을 '분리된' 백그라운드
+    // Task로 떼어낸다. 재무장은 최대 20슬롯 × 재시도·XPC = 수 초가 걸리는데,
+    // perform() 본문에서 이를 await로 끝까지 기다리면 정지 인텐트의 빠듯한
+    // 실행 예산을 다 써 앱 오픈/라우팅이 지연·중단될 수 있다. Task.detached는
+    // .immediate가 열어준 앱 프로세스 안에서 perform() 반환과 무관하게 계속
+    // 돌므로, 무음 모드의 '큰 소리 사다리 재무장'을 지키면서도 미션 오픈을
+    // 막지 않는다. (evening stop이어도 재무장은 항상 돌도록 이 블록은 아래
+    // 아침-우선 조기 반환보다 먼저 실행한다.)
+    let rearmKind = kind
+    let rearmAlarmId = alarmId
+    let rearmWatchdogId = watchdogAlarmId
+    Task.detached(priority: .userInitiated) {
+      await NativeAlarmPlugin.armStopEcho(kind: rearmKind)
+      await NativeAlarmPlugin.handleAlarmStopped(
+        kind: rearmKind,
+        alarmId: rearmAlarmId,
+        watchdogAlarmId: rearmWatchdogId
+      )
     }
-#if canImport(AlarmKit)
-    // 위의 큰 소리 재무장(armStopEcho + handleAlarmStopped)이 '배경'에서
-    // 모두 끝난 뒤에야 포그라운드 전환을 요청한다. 잠금 화면 뒤에서는 잠금
-    // 해제까지 여기서 대기하지만, 그 사이에도 재무장된 AlarmKit 사다리가
-    // 무음/진동 스위치를 뚫고 계속 울린다. 잠금 해제되면 앱이 떠서 Flutter가
-    // pendingMission 플래그를 소비해 미션 화면으로 라우팅한다(기존 경로).
-    // 포그라운드 전환이 실패해도 재무장은 이미 완료됐으므로 try?로 무시한다.
-    try? await requestToContinueInForeground()
-#endif
+
+    // supportedModes = .foreground(.immediate) 이므로 이 인텐트가 실행되면
+    // 시스템이 자동으로 앱을 포그라운드로 연다(잠금 화면이면 인증 후). 어느
+    // 미션을 열지는 위에서 쓴 pendingMission 플래그가 결정한다 — 아침 우선
+    // 규칙상 evening stop은 기존 아침 대기표를 덮지 않으므로, 앱이 열려도
+    // 항상 올바른 미션(아침)으로 라우팅된다. 별도의 포그라운드 요청 호출은
+    // 필요 없다.
     return .result()
   }
 
